@@ -1,0 +1,28 @@
+  postgresql:
+    image: {{ registry_url or 'dh-mirror.gitverse.ru/postgres:15-alpine' }}
+    container_name: postgresql
+    restart: unless-stopped
+{% if config.get('ports') %}
+    ports:
+{% for ext, intv in config['ports'].items() %}
+      - "{{ ext }}:{{ intv }}"
+{% endfor %}
+{% endif %}
+    environment:
+      POSTGRES_DB: gosdocker
+      POSTGRES_USER: gosdocker
+      POSTGRES_PASSWORD: {{ config.get('env', {}).get('POSTGRES_PASSWORD', 'changeme') }}
+{% if config.get('env', {}).get('TZ') %}
+      TZ: "{{ config.get('env', {}).get('TZ') }}"
+{% endif %}
+{% if config.get('volumes') %}
+    volumes:
+{% for host, container in config['volumes'].items() %}
+      - {{ host }}:{{ container }}
+{% endfor %}
+{% else %}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+{% endif %}
+    networks:
+      - gosdocker

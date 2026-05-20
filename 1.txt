@@ -1,0 +1,2396 @@
+===== docker-compose.yml =====
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://gosdocker:secret@db:5432/gosdocker
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - gosdocker
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - backend
+    networks:
+      - gosdocker
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - gosdocker
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=gosdocker
+      - POSTGRES_USER=gosdocker
+      - POSTGRES_PASSWORD=secret
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - gosdocker
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gosdocker"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
+
+networks:
+  gosdocker:
+    driver: bridge
+
+===== .env.example =====
+# GosDocker Environment
+DATABASE_URL=postgresql+asyncpg://gosdocker:secret@localhost:5432/gosdocker
+DEBUG=false
+
+===== .gitignore =====
+# Python
+__pycache__/
+*.py[cod]
+.env
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Docker
+.docker/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+backend/app/templates/*
+!backend/app/templates/single/
+!backend/app/templates/stacks/
+
+===== nginx/nginx.conf =====
+events {
+    worker_connections 1024;
+}
+
+http {
+    upstream frontend {
+        server frontend:80;
+    }
+
+    upstream backend {
+        server backend:8000;
+    }
+
+    server {
+        listen 80;
+        server_name localhost;
+
+        location / {
+            proxy_pass http://frontend;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        location /api {
+            proxy_pass http://backend;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+    }
+}
+
+===== backend/app/main.py =====
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from .api import categories_router, components_router, stacks_router, generate_router
+
+app = FastAPI(
+    title="GosDocker API",
+    description="Каталог Docker Compose-сборок для госструктур",
+    version="1.0.0"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(categories_router)
+app.include_router(components_router)
+app.include_router(stacks_router)
+app.include_router(generate_router)
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+===== backend/app/__init__.py =====
+from .config import settings
+from .database import Base, get_db, engine
+from .models.category import Category
+from .models.component import Component
+from .models.stack import Stack, stack_components
+
+__all__ = ["settings", "Base", "get_db", "engine", "Category", "Component", "Stack"]
+
+===== backend/app/config.py =====
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    database_url: str = "postgresql+asyncpg://gosdocker:secret@localhost:5432/gosdocker"
+    debug: bool = False
+    templates_dir: str = "app/templates"
+
+    model_config = SettingsConfigDict(env_file=".env")
+
+
+settings = Settings()
+
+===== backend/app/database.py =====
+from typing import AsyncGenerator
+
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.orm import declarative_base
+from .config import settings
+
+Base = declarative_base()
+
+engine = create_async_engine(settings.database_url, echo=settings.debug)
+
+async_session = async_sessionmaker(
+    engine,
+    class_=AsyncSession,
+    expire_on_commit=False
+)
+
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    async with async_session() as session:
+        yield session
+
+===== backend/app/models/__init__.py =====
+from .category import Category
+from .component import Component
+from .stack import Stack, stack_components
+
+__all__ = ["Category", "Component", "Stack", "stack_components"]
+
+===== backend/app/models/category.py =====
+from sqlalchemy import Column, String, Integer, DateTime, Text
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
+import uuid
+from datetime import datetime
+from ..database import Base
+
+def _utcnow() -> datetime:
+    return datetime.utcnow()
+
+class Category(Base):
+    __tablename__ = "categories"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(100), nullable=False)
+    slug = Column(String(100), unique=True, nullable=False)
+    icon = Column(String(50), default="📦")
+    description = Column(Text)
+    sort_order = Column(Integer, default=0)
+    created_at = Column(DateTime, default=_utcnow)
+
+    components = relationship("Component", back_populates="category", lazy="selectin")
+
+===== backend/app/models/component.py =====
+from sqlalchemy import Column, String, Text, Boolean, ForeignKey, JSON, DateTime
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
+import uuid
+from datetime import datetime
+from ..database import Base
+
+def _utcnow() -> datetime:
+    return datetime.utcnow()
+
+class Component(Base):
+    __tablename__ = "components"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(200), nullable=False)
+    slug = Column(String(200), unique=True, nullable=False)
+    category_id = Column(UUID(as_uuid=True), ForeignKey("categories.id"))
+
+    # Docker
+    image = Column(String(500), nullable=False)
+    image_source = Column(String(200))  # "registry.red-soft.ru" / "dh-mirror.gitverse.ru"
+    registry_url = Column(String(500), nullable=False)
+    is_registry = Column(Boolean, default=False)
+    registry_number = Column(String(50))  # "№17604"
+
+    # Метаданные
+    description = Column(Text)
+    version = Column(String(50))
+    documentation_url = Column(String(500))
+
+    # Конфигурация
+    default_ports = Column(JSON, default=dict)
+    default_volumes = Column(JSON, default=dict)
+    default_env = Column(JSON, default=dict)
+    variables_schema = Column(JSON, default=dict)
+    template_file = Column(String(500))
+
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+    category = relationship("Category", back_populates="components", lazy="selectin")
+
+===== backend/app/models/stack.py =====
+from sqlalchemy import Column, String, Text, Boolean, DateTime, Table, ForeignKey
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
+import uuid
+from datetime import datetime
+from ..database import Base
+
+def _utcnow() -> datetime:
+    return datetime.utcnow()
+
+stack_components = Table(
+    'stack_components',
+    Base.metadata,
+    Column('stack_id', UUID(as_uuid=True), ForeignKey('stacks.id')),
+    Column('component_id', UUID(as_uuid=True), ForeignKey('components.id'))
+)
+
+class Stack(Base):
+    __tablename__ = "stacks"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(200), nullable=False)
+    slug = Column(String(200), unique=True, nullable=False)
+    description = Column(Text)
+    is_featured = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=_utcnow)
+
+    components = relationship("Component", secondary=stack_components, lazy="selectin")
+
+===== backend/app/schemas/__init__.py =====
+from .category import CategoryResponse
+from .component import ComponentDetail
+from .generate import GenerateRequest, GenerateResponse
+
+__all__ = ["CategoryResponse", "ComponentDetail", "GenerateRequest", "GenerateResponse"]
+
+===== backend/app/schemas/category.py =====
+from pydantic import BaseModel
+from uuid import UUID
+
+class CategoryBase(BaseModel):
+    name: str
+    slug: str
+    icon: str = "📦"
+    description: str | None = None
+    sort_order: int = 0
+
+class CategoryResponse(CategoryBase):
+    id: UUID
+    components_count: int = 0
+    registry_count: int = 0
+    community_count: int = 0
+
+    class Config:
+        from_attributes = True
+
+===== backend/app/schemas/component.py =====
+from pydantic import BaseModel
+from uuid import UUID
+
+class ComponentBase(BaseModel):
+    name: str
+    slug: str
+    image: str
+    is_registry: bool = False
+    registry_number: str | None = None
+    description: str | None = None
+    version: str | None = None
+
+class ComponentDetail(ComponentBase):
+    id: UUID
+    category: str
+    image_source: str
+    registry_url: str
+    default_ports: dict = {}
+    default_volumes: dict = {}
+    default_env: dict = {}
+    variables_schema: dict = {}
+
+    class Config:
+        from_attributes = True
+
+===== backend/app/schemas/generate.py =====
+from pydantic import BaseModel
+
+class ComponentConfig(BaseModel):
+    ports: dict[str, int] = {}
+    volumes: dict[str, str] = {}
+    env: dict[str, str] = {}
+
+class GenerateRequest(BaseModel):
+    components: list[str]  # slugs
+    config: dict[str, ComponentConfig] = {}
+    include_sources: bool = True
+
+class GenerateResponse(BaseModel):
+    filename: str
+    size_bytes: int
+    files: list[str]
+
+===== backend/app/api/__init__.py =====
+from .categories import router as categories_router
+from .components import router as components_router
+from .stacks import router as stacks_router
+from .generate import router as generate_router
+
+__all__ = ["categories_router", "components_router", "stacks_router", "generate_router"]
+
+===== backend/app/api/categories.py =====
+from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func, Integer
+from ..database import get_db
+from ..models import Category, Component
+from ..schemas.category import CategoryResponse
+
+router = APIRouter(prefix="/api/categories", tags=["categories"])
+
+@router.get("", response_model=list[CategoryResponse])
+async def list_categories(db: AsyncSession = Depends(get_db)):
+    # Single query: categories with component counts
+    query = (
+        select(
+            Category,
+            func.count(Component.id).label("total"),
+            func.sum(Component.is_registry.cast(Integer)).label("registry_count")
+        )
+        .outerjoin(Component, Category.id == Component.category_id)
+        .group_by(Category.id)
+        .order_by(Category.sort_order)
+    )
+    result = await db.execute(query)
+    rows = result.all()
+
+    return [
+        CategoryResponse(
+            id=cat.id,
+            name=cat.name,
+            slug=cat.slug,
+            icon=cat.icon,
+            description=cat.description,
+            sort_order=cat.sort_order,
+            components_count=total or 0,
+            registry_count=registry_count or 0,
+            community_count=(total or 0) - (registry_count or 0)
+        )
+        for cat, total, registry_count in rows
+    ]
+
+===== backend/app/api/components.py =====
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
+from ..database import get_db
+from ..models import Component, Category
+from ..schemas.component import ComponentDetail
+
+router = APIRouter(prefix="/api/components", tags=["components"])
+
+@router.get("", response_model=list[ComponentDetail])
+async def list_components(
+    category: str | None = None,
+    registry_only: bool = False,
+    db: AsyncSession = Depends(get_db)
+):
+    query = select(Component).options(selectinload(Component.category))
+    if category:
+        query = query.join(Category).where(Category.slug == category)
+    if registry_only:
+        query = query.where(Component.is_registry == True)
+
+    result = await db.execute(query)
+    components = result.scalars().all()
+
+    return [
+        ComponentDetail(
+            id=comp.id,
+            name=comp.name,
+            slug=comp.slug,
+            category=comp.category.slug if comp.category else "",
+            image=comp.image,
+            is_registry=comp.is_registry,
+            registry_number=comp.registry_number,
+            image_source=comp.image_source or "",
+            registry_url=comp.registry_url or "",
+            description=comp.description,
+            version=comp.version,
+            default_ports=comp.default_ports or {},
+            default_volumes=comp.default_volumes or {},
+            default_env=comp.default_env or {},
+            variables_schema=comp.variables_schema or {}
+        )
+        for comp in components
+    ]
+
+@router.get("/{slug}", response_model=ComponentDetail)
+async def get_component(slug: str, db: AsyncSession = Depends(get_db)):
+    query = select(Component).options(selectinload(Component.category)).where(Component.slug == slug)
+    result = await db.execute(query)
+    comp = result.scalar_one_or_none()
+
+    if not comp:
+        raise HTTPException(status_code=404, detail="Component not found")
+
+    return ComponentDetail(
+        id=comp.id,
+        name=comp.name,
+        slug=comp.slug,
+        category=comp.category.slug if comp.category else "",
+        image=comp.image,
+        is_registry=comp.is_registry,
+        registry_number=comp.registry_number,
+        image_source=comp.image_source or "",
+        registry_url=comp.registry_url or "",
+        description=comp.description,
+        version=comp.version,
+        default_ports=comp.default_ports or {},
+        default_volumes=comp.default_volumes or {},
+        default_env=comp.default_env or {},
+        variables_schema=comp.variables_schema or {}
+    )
+
+===== backend/app/api/stacks.py =====
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from pydantic import BaseModel
+from ..database import get_db
+from ..models import Stack
+
+router = APIRouter(prefix="/api/stacks", tags=["stacks"])
+
+
+class StackComponentResponse(BaseModel):
+    name: str
+    slug: str
+    is_registry: bool
+    image: str | None = None
+    registry_url: str | None = None
+    default_ports: dict | None = None
+    default_env: dict | None = None
+
+
+class StackResponse(BaseModel):
+    id: str
+    name: str
+    slug: str
+    description: str | None = None
+    is_featured: bool
+    components: list[StackComponentResponse]
+
+    class Config:
+        from_attributes = True
+
+@router.get("", response_model=list[StackResponse])
+async def list_stacks(db: AsyncSession = Depends(get_db)):
+    query = select(Stack).order_by(Stack.is_featured.desc())
+    result = await db.execute(query)
+    stacks = result.scalars().all()
+
+    return [
+        {
+            "id": str(s.id),
+            "name": s.name,
+            "slug": s.slug,
+            "description": s.description,
+            "is_featured": s.is_featured,
+            "components": [
+                {"name": c.name, "slug": c.slug, "is_registry": c.is_registry}
+                for c in s.components
+            ]
+        }
+        for s in stacks
+    ]
+
+@router.get("/{slug}", response_model=StackResponse)
+async def get_stack(slug: str, db: AsyncSession = Depends(get_db)):
+    query = select(Stack).where(Stack.slug == slug)
+    result = await db.execute(query)
+    stack = result.scalar_one_or_none()
+
+    if not stack:
+        raise HTTPException(status_code=404, detail="Stack not found")
+
+    return {
+        "id": str(stack.id),
+        "name": stack.name,
+        "slug": stack.slug,
+        "description": stack.description,
+        "is_featured": stack.is_featured,
+        "components": [
+            {
+                "name": c.name,
+                "slug": c.slug,
+                "is_registry": c.is_registry,
+                "image": c.image,
+                "registry_url": c.registry_url,
+                "default_ports": c.default_ports or {},
+                "default_env": c.default_env or {}
+            }
+            for c in stack.components
+        ]
+    }
+
+===== backend/app/api/generate.py =====
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from ..database import get_db
+from ..models import Component
+from ..schemas.generate import GenerateRequest
+from ..services.generate_service import GenerateService
+
+router = APIRouter(prefix="/api/generate", tags=["generate"])
+
+@router.post("")
+async def generate_compose(
+    body: GenerateRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    # Get components
+    query = select(Component).where(Component.slug.in_(body.components))
+    result = await db.execute(query)
+    components = result.scalars().all()
+
+    if not components:
+        raise HTTPException(status_code=404, detail="No components found")
+
+    # Generate ZIP
+    service = GenerateService()
+    zip_buffer = service.create_zip(list(components), body.config)
+
+    return StreamingResponse(
+        iter([zip_buffer.getvalue()]),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": "attachment; filename=gosdocker-stack.zip"
+        }
+    )
+
+===== backend/app/services/__init__.py =====
+from .template_service import TemplateService
+from .generate_service import GenerateService
+
+__all__ = ["TemplateService", "GenerateService"]
+
+===== backend/app/services/template_service.py =====
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+from pathlib import Path
+from datetime import datetime, timezone
+
+class TemplateService:
+    def __init__(self, templates_dir: str = "templates"):
+        base_dir = Path(__file__).parent.parent  # app/
+        self.templates_path = base_dir / templates_dir
+        self.env = Environment(
+            loader=FileSystemLoader(str(self.templates_path)),
+            autoescape=select_autoescape(['html', 'xml']),
+            trim_blocks=True,
+            lstrip_blocks=True
+        )
+        # Add datetime to global context
+        self.env.globals['now'] = lambda: datetime.utcnow()
+
+    def render(self, template_path: str, context: dict) -> str:
+        """Render Jinja2 template with context."""
+        template = self.env.get_template(template_path)
+        return template.render(**context)
+
+    def render_single(self, component_slug: str, config: dict) -> str:
+        """Render docker-compose for a single component."""
+        template_path = f"single/{component_slug}/docker-compose.yml.j2"
+        return self.render(template_path, {"config": config, "registry_url": config.get("registry_url", "")})
+
+    def render_stack(self, stack_slug: str, components: list, configs: dict) -> str:
+        """Render docker-compose for a stack (multiple components)."""
+        template_path = f"stacks/{stack_slug}.yml.j2"
+        return self.render(template_path, {
+            "components": components,
+            "configs": configs
+        })
+
+===== backend/app/services/generate_service.py =====
+import zipfile
+import yaml
+from io import BytesIO
+from datetime import datetime
+from .template_service import TemplateService
+
+class GenerateService:
+    def __init__(self):
+        self.template_service = TemplateService()
+
+    def create_zip(self, components: list, configs: dict) -> BytesIO:
+        """Create ZIP archive with docker-compose.yml and supporting files."""
+
+        buffer = BytesIO()
+
+        with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+            # Render docker-compose.yml
+            compose_content = self._render_compose(components, configs)
+            zf.writestr("docker-compose.yml", compose_content)
+
+            # Create .env.example
+            env_content = self._create_env_example(components, configs)
+            zf.writestr(".env.example", env_content)
+
+            # Create README.md
+            readme_content = self._create_readme(components)
+            zf.writestr("README.md", readme_content)
+
+        buffer.seek(0)
+        return buffer
+
+    def _render_compose(self, components: list, configs: dict) -> str:
+        """Render unified docker-compose.yml from all components."""
+
+        services = []
+        networks = ["gosdocker"]
+
+        for comp in components:
+            slug = comp.slug
+            raw = configs.get(slug)
+            if raw is None:
+                config = {}
+            elif hasattr(raw, "model_dump"):
+                config = raw.model_dump()
+            else:
+                config = dict(raw)
+
+            # Add registry_url from component to config
+            if not config.get("registry_url"):
+                config["registry_url"] = comp.registry_url
+
+            # Render component template
+            try:
+                content = self.template_service.render_single(slug, config)
+                services.append(content)
+            except Exception as e:
+                # Fall back to basic compose if template rendering fails
+                import logging
+                logging.warning(f"Template rendering failed for {slug}: {e}")
+                services.append(self._fallback_compose(comp, config))
+
+        # Merge
+        return self._merge_compose_files(services, networks)
+
+    def _fallback_compose(self, component, config: dict) -> str:
+        """Basic generation if no template exists."""
+        ports = config.get("ports", {})
+        env = config.get("env", {})
+        volumes = config.get("volumes", {})
+
+        ports_lines = [f'      - "{ext}:{intv}"' for ext, intv in ports.items()]
+        ports_str = "\n".join(ports_lines) + "\n" if ports_lines else ""
+        env_lines = [f'      {k}: "{v}"' for k, v in env.items()]
+        env_str = "\n".join(env_lines) + "\n" if env_lines else ""
+        volumes_lines = [f'      - {host}:{container}' for host, container in volumes.items()]
+        volumes_str = "\n".join(volumes_lines) + "\n" if volumes_lines else ""
+
+        parts = [
+            f"  {component.slug}:",
+            f"    image: {component.registry_url}",
+            f"    container_name: {component.slug}",
+            f"    restart: unless-stopped",
+        ]
+        if ports_lines:
+            parts.append("    ports:")
+            parts.append(ports_str.rstrip("\n"))
+        if env_lines:
+            parts.append("    environment:")
+            parts.append(env_str.rstrip("\n"))
+        if volumes_lines:
+            parts.append("    volumes:")
+            parts.append(volumes_str.rstrip("\n"))
+
+        return "\n".join(parts) + "\n"
+
+    def _merge_compose_files(self, services: list, networks: list) -> str:
+        """Merge docker-compose fragments into one file using YAML."""
+        merged = {"services": {}, "networks": {}, "volumes": {}}
+
+        for svc_yaml in services:
+            data = yaml.safe_load(svc_yaml)
+            if not data:
+                continue
+            svc_name = list(data.keys())[0]
+            svc_data = data[svc_name]
+            merged["services"][svc_name] = svc_data
+
+            # Extract named volumes from service-level volumes list
+            svc_volumes = svc_data.get("volumes", [])
+            for vol in svc_volumes:
+                if isinstance(vol, str) and ":" in vol:
+                    vol_name = vol.split(":")[0]
+                    if vol_name and not vol_name.startswith("/"):
+                        merged["volumes"][vol_name] = None
+
+        for net in networks:
+            merged["networks"][net] = {"driver": "bridge"}
+
+        header = f"# Generated by GosDocker\n# {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+        return header + yaml.dump(merged, default_flow_style=False, sort_keys=False, allow_unicode=True, indent=2)
+
+    def _create_env_example(self, components: list, configs: dict) -> str:
+        """Create .env.example with variables."""
+        lines = ["# GosDocker Environment Variables", "# Update values for your environment", ""]
+
+        for comp in components:
+            slug = comp.slug
+            raw = configs.get(slug)
+            if raw is None:
+                continue
+            elif hasattr(raw, "model_dump"):
+                config = raw.model_dump()
+            else:
+                config = dict(raw)
+            env = config.get("env", {})
+
+            for key, value in env.items():
+                lines.append(f"{slug.upper()}_{key.upper()}={value}")
+
+        return "\n".join(lines)
+
+    def _create_readme(self, components: list) -> str:
+        """Create README.md for the downloaded stack."""
+
+        component_list = "\n".join([f"- {c.name}" for c in components])
+
+        rows = "\n".join([f"| {c.name} | {c.image} | {c.registry_url} |" for c in components])
+
+        return f"""# GosDocker Stack
+
+Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}
+
+## Components
+
+{component_list}
+
+## Quick Start
+
+```bash
+# Copy environment file
+cp .env.example .env
+# Edit .env with your values
+
+# Start stack
+docker compose up -d
+```
+
+## Sources
+
+| Component | Image | Source |
+|-----------|-------|--------|
+{rows}
+"""
+
+===== backend/seed.py =====
+"""
+Seed script — fills database with components and stacks.
+"""
+import asyncio
+from app.database import async_session, engine, Base
+from app.models import Category, Component, Stack
+
+CATEGORIES = [
+    {"name": "Web", "slug": "web", "icon": "🌐", "description": "Веб-серверы и прокси", "sort_order": 1},
+    {"name": "Data", "slug": "data", "icon": "🗄️", "description": "Базы данных", "sort_order": 2},
+    {"name": "Files", "slug": "files", "icon": "📁", "description": "Файловые хранилища", "sort_order": 3},
+    {"name": "Monitoring", "slug": "monitoring", "icon": "📊", "description": "Мониторинг и метрики", "sort_order": 4},
+]
+
+COMPONENTS = [
+    # Web
+    {
+        "name": "Angie PRO",
+        "slug": "angie-pro",
+        "category_slug": "web",
+        "image": "riftbit/angie",
+        "image_source": "dh-mirror.gitverse.ru",
+        "registry_url": "dh-mirror.gitverse.ru/riftbit/angie",
+        "is_registry": True,
+        "registry_number": "№17604",
+        "description": "Российский веб-сервер (форк Nginx), внесён в Реестр ПО Минцифры",
+        "version": "1.10.0",
+        "default_ports": {"80": 80, "443": 443},
+        "default_env": {"TZ": "Europe/Moscow"},
+        "template_file": "single/angie/docker-compose.yml.j2"
+    },
+    {
+        "name": "nginx",
+        "slug": "nginx",
+        "category_slug": "web",
+        "image": "nginx",
+        "image_source": "dh-mirror.gitverse.ru",
+        "registry_url": "registry.red-soft.ru/ubi8/nginx",
+        "is_registry": False,
+        "description": "Веб-сервер, стандарт индустрии",
+        "version": "1.28",
+        "default_ports": {"80": 80, "443": 443},
+        "default_env": {"TZ": "Europe/Moscow"},
+        "template_file": "single/nginx/docker-compose.yml.j2"
+    },
+    # Data
+    {
+        "name": "PostgreSQL РЕД ОС",
+        "slug": "postgresql-redos",
+        "category_slug": "data",
+        "image": "postgresql-17",
+        "image_source": "registry.red-soft.ru",
+        "registry_url": "registry.red-soft.ru/ubi8/postgresql-17",
+        "is_registry": True,
+        "description": "Российская СУБД на базе PostgreSQL 17, реестр РЕД ОС",
+        "version": "17",
+        "default_ports": {"5432": 5432},
+        "default_env": {"POSTGRES_PASSWORD": "changeme", "TZ": "Europe/Moscow"},
+        "template_file": "single/postgresql-redos/docker-compose.yml.j2"
+    },
+    {
+        "name": "PostgreSQL",
+        "slug": "postgresql",
+        "category_slug": "data",
+        "image": "postgres",
+        "image_source": "dh-mirror.gitverse.ru",
+        "registry_url": "dh-mirror.gitverse.ru/postgres:15-alpine",
+        "is_registry": False,
+        "description": "Популярная СУБД, проверенная временем",
+        "version": "15-alpine",
+        "default_ports": {"5432": 5432},
+        "default_env": {"POSTGRES_PASSWORD": "changeme", "TZ": "Europe/Moscow"},
+        "template_file": "single/postgresql/docker-compose.yml.j2"
+    },
+    # Files
+    {
+        "name": "Nextcloud",
+        "slug": "nextcloud",
+        "category_slug": "files",
+        "image": "nextcloud",
+        "image_source": "dh-mirror.gitverse.ru",
+        "registry_url": "dh-mirror.gitverse.ru/library/nextcloud",
+        "is_registry": True,
+        "description": "Облачное хранилище файлов с совместной работой",
+        "version": "latest",
+        "default_ports": {"8080": 80},
+        "default_env": {"MYSQL_PASSWORD": "changeme", "TZ": "Europe/Moscow"},
+        "template_file": "single/nextcloud/docker-compose.yml.j2"
+    },
+    # Monitoring
+    {
+        "name": "Prometheus",
+        "slug": "prometheus",
+        "category_slug": "monitoring",
+        "image": "prom/prometheus",
+        "image_source": "dh-mirror.gitverse.ru",
+        "registry_url": "dh-mirror.gitverse.ru/prom/prometheus",
+        "is_registry": False,
+        "description": "Сборщик метрик и мониторинга",
+        "version": "latest",
+        "default_ports": {"9090": 9090},
+        "default_env": {"TZ": "Europe/Moscow"},
+        "template_file": "single/prometheus/docker-compose.yml.j2"
+    },
+    {
+        "name": "Grafana",
+        "slug": "grafana",
+        "category_slug": "monitoring",
+        "image": "grafana/grafana",
+        "image_source": "dh-mirror.gitverse.ru",
+        "registry_url": "dh-mirror.gitverse.ru/grafana/grafana",
+        "is_registry": False,
+        "description": "Визуализация метрик и дашборды",
+        "version": "latest",
+        "default_ports": {"3000": 3000},
+        "default_env": {"GF_SECURITY_ADMIN_PASSWORD": "admin", "TZ": "Europe/Moscow"},
+        "template_file": "single/grafana/docker-compose.yml.j2"
+    },
+]
+
+STACKS = [
+    {
+        "name": "Веб + СУБД (РФ)",
+        "slug": "web-database-registry",
+        "description": "Angie PRO + PostgreSQL (РЕД ОС) — полностью российские решения",
+        "is_featured": True,
+        "component_slugs": ["angie-pro", "postgresql-redos"]
+    },
+    {
+        "name": "Веб + СУБД (Community)",
+        "slug": "web-database-community",
+        "description": "nginx + PostgreSQL — популярные open-source решения",
+        "is_featured": False,
+        "component_slugs": ["nginx", "postgresql"]
+    },
+    {
+        "name": "Мониторинг",
+        "slug": "monitoring",
+        "description": "Prometheus + Grafana — стек для мониторинга",
+        "is_featured": True,
+        "component_slugs": ["prometheus", "grafana"]
+    },
+    {
+        "name": "Полный стек (РФ)",
+        "slug": "full-registry",
+        "description": "Angie PRO + PostgreSQL (РЕД ОС) + Nextcloud — все компоненты из Реестра РФ",
+        "is_featured": True,
+        "component_slugs": ["angie-pro", "postgresql-redos", "nextcloud"]
+    },
+    {
+        "name": "Полный стек Community",
+        "slug": "full-community",
+        "description": "nginx + PostgreSQL + Prometheus + Grafana — все open-source компоненты",
+        "is_featured": False,
+        "component_slugs": ["nginx", "postgresql", "prometheus", "grafana"]
+    },
+]
+
+
+async def seed():
+    """Seed the database with categories, components, and stacks."""
+    # Create tables
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with async_session() as session:
+        # Categories
+        category_map = {}
+        for cat_data in CATEGORIES:
+            cat = Category(**cat_data)
+            session.add(cat)
+            category_map[cat_data["slug"]] = cat
+        await session.commit()
+
+        # Components
+        component_map = {}
+        for comp_data in COMPONENTS:
+            cat_slug = comp_data.pop("category_slug")
+            comp = Component(
+                **comp_data,
+                category_id=category_map[cat_slug].id
+            )
+            session.add(comp)
+            component_map[comp_data["slug"]] = comp
+        await session.commit()
+
+        # Stacks
+        for stack_data in STACKS:
+            comp_slugs = stack_data.pop("component_slugs")
+            stack = Stack(**stack_data)
+            for slug in comp_slugs:
+                stack.components.append(component_map[slug])
+            session.add(stack)
+        await session.commit()
+
+        print(f"Seeded {len(CATEGORIES)} categories, {len(COMPONENTS)} components, {len(STACKS)} stacks")
+
+
+if __name__ == "__main__":
+    asyncio.run(seed())
+
+===== backend/alembic.ini =====
+[alembic]
+script_location = alembic
+prepend_sys_path = .
+sqlalchemy.url = postgresql+asyncpg://gosdocker:secret@localhost:5432/gosdocker
+
+[loggers]
+keys = root,sqlalchemy,alembic
+
+[handlers]
+keys = console
+
+[formatters]
+keys = generic
+
+[logger_root]
+level = WARN
+handlers = console
+qualname =
+
+[logger_sqlalchemy]
+level = WARN
+handlers =
+qualname = sqlalchemy.engine
+
+[logger_alembic]
+level = INFO
+handlers =
+qualname = alembic
+
+[handler_console]
+class = StreamHandler
+args = (sys.stderr,)
+level = NOTSET
+formatter = generic
+
+[formatter_generic]
+format = %(levelname)-5.5s [%(name)s] %(message)s
+datefmt = %H:%M:%S
+
+===== backend/alembic/env.py =====
+from logging.config import fileConfig
+from sqlalchemy import pool
+from sqlalchemy.ext.asyncio import async_engine_from_config
+from alembic import context
+import asyncio
+
+from app.database import Base
+from app.models import Category, Component, Stack
+
+config = context.config
+
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
+
+target_metadata = Base.metadata
+
+
+def run_migrations_offline() -> None:
+    """Run migrations in 'offline' mode."""
+    url = config.get_main_option("sqlalchemy.url")
+    context.configure(
+        url=url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={"paramstyle": "named"},
+    )
+
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+def do_run_migrations(connection):
+    context.configure(connection=connection, target_metadata=target_metadata)
+
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+async def run_async_migrations():
+    """Run migrations in 'online' mode with async engine."""
+    connectable = async_engine_from_config(
+        config.get_section(config.config_ini_section, {}),
+        prefix="sqlalchemy.",
+        poolclass=pool.NullPool,
+    )
+
+    async with connectable.connect() as connection:
+        await connection.run_sync(do_run_migrations)
+
+    await connectable.dispose()
+
+
+def run_migrations_online() -> None:
+    """Run migrations in 'online' mode."""
+    asyncio.run(run_async_migrations())
+
+
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    run_migrations_online()
+
+===== backend/alembic/script.py.mako =====
+"""${message}
+
+Revision ID: ${up_revision}
+Revises: ${down_revision | comma,n}
+Create Date: ${create_date}
+
+"""
+from typing import Sequence, Union
+from alembic import op
+import sqlalchemy as sa
+${imports if imports else ""}
+
+# revision identifiers, used by Alembic.
+revision: str = ${repr(up_revision)}
+down_revision: Union[str, None] = ${repr(down_revision)}
+branch_labels: Union[str, Sequence[str], None] = ${repr(branch_labels)}
+depends_on: Union[str, Sequence[str], None] = ${repr(depends_on)}
+
+
+def upgrade() -> None:
+    ${upgrades if upgrades else "pass"}
+
+
+def downgrade() -> None:
+    ${downgrades if downgrades else "pass"}
+
+===== backend/requirements.txt =====
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+sqlalchemy[asyncio]==2.0.25
+asyncpg==0.29.0
+pydantic==2.5.3
+pydantic-settings==2.1.0
+jinja2==3.1.3
+python-multipart==0.0.6
+aiofiles==23.2.1
+alembic==1.13.1
+psycopg2-binary==2.9.9
+httpx==0.26.0
+pyyaml==6.0.1
+
+===== backend/Dockerfile =====
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+EXPOSE 8000
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+===== backend/app/templates/single/nginx/docker-compose.yml.j2 =====
+  nginx:
+    image: {{ registry_url or 'registry.red-soft.ru/ubi8/nginx' }}
+    container_name: nginx
+    restart: unless-stopped
+{% if config.get('ports') %}
+    ports:
+{% for ext, intv in config['ports'].items() %}
+      - "{{ ext }}:{{ intv }}"
+{% endfor %}
+{% endif %}
+{% if config.get('volumes') %}
+    volumes:
+{% for host, container in config['volumes'].items() %}
+      - {{ host }}:{{ container }}
+{% endfor %}
+{% endif %}
+{% if config.get('env') %}
+    environment:
+{% for key, value in config['env'].items() %}
+      {{ key }}: "{{ value }}"
+{% endfor %}
+{% endif %}
+    networks:
+      - gosdocker
+
+===== backend/app/templates/single/angie-pro/docker-compose.yml.j2 =====
+  angie-pro:
+    image: {{ registry_url or 'dh-mirror.gitverse.ru/riftbit/angie' }}
+    container_name: angie-pro
+    restart: unless-stopped
+{% if config.get('ports') %}
+    ports:
+{% for ext, intv in config['ports'].items() %}
+      - "{{ ext }}:{{ intv }}"
+{% endfor %}
+{% endif %}
+{% if config.get('volumes') %}
+    volumes:
+{% for host, container in config['volumes'].items() %}
+      - {{ host }}:{{ container }}
+{% endfor %}
+{% endif %}
+{% if config.get('env') %}
+    environment:
+{% for key, value in config['env'].items() %}
+      {{ key }}: "{{ value }}"
+{% endfor %}
+{% endif %}
+    networks:
+      - gosdocker
+
+===== backend/app/templates/single/postgresql/docker-compose.yml.j2 =====
+  postgresql:
+    image: {{ registry_url or 'dh-mirror.gitverse.ru/postgres:15-alpine' }}
+    container_name: postgresql
+    restart: unless-stopped
+{% if config.get('ports') %}
+    ports:
+{% for ext, intv in config['ports'].items() %}
+      - "{{ ext }}:{{ intv }}"
+{% endfor %}
+{% endif %}
+    environment:
+      POSTGRES_DB: gosdocker
+      POSTGRES_USER: gosdocker
+      POSTGRES_PASSWORD: {{ config.get('env', {}).get('POSTGRES_PASSWORD', 'changeme') }}
+{% if config.get('env', {}).get('TZ') %}
+      TZ: "{{ config.get('env', {}).get('TZ') }}"
+{% endif %}
+{% if config.get('volumes') %}
+    volumes:
+{% for host, container in config['volumes'].items() %}
+      - {{ host }}:{{ container }}
+{% endfor %}
+{% else %}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+{% endif %}
+    networks:
+      - gosdocker
+
+===== backend/app/templates/single/postgresql-redos/docker-compose.yml.j2 =====
+  postgresql-redos:
+    image: {{ registry_url or 'registry.red-soft.ru/ubi8/postgresql-17' }}
+    container_name: postgresql-redos
+    restart: unless-stopped
+{% if config.get('ports') %}
+    ports:
+{% for ext, intv in config['ports'].items() %}
+      - "{{ ext }}:{{ intv }}"
+{% endfor %}
+{% endif %}
+    environment:
+      POSTGRES_DB: gosdocker
+      POSTGRES_USER: gosdocker
+      POSTGRES_PASSWORD: {{ config.get('env', {}).get('POSTGRES_PASSWORD', 'changeme') }}
+{% if config.get('env', {}).get('TZ') %}
+      TZ: "{{ config.get('env', {}).get('TZ') }}"
+{% endif %}
+{% if config.get('volumes') %}
+    volumes:
+{% for host, container in config['volumes'].items() %}
+      - {{ host }}:{{ container }}
+{% endfor %}
+{% else %}
+    volumes:
+      - pgdata-redos:/var/lib/postgresql/data
+{% endif %}
+    networks:
+      - gosdocker
+
+===== backend/app/templates/single/nextcloud/docker-compose.yml.j2 =====
+  nextcloud:
+    image: {{ registry_url or 'dh-mirror.gitverse.ru/library/nextcloud' }}
+    container_name: nextcloud
+    restart: unless-stopped
+{% if config.get('ports') %}
+    ports:
+{% for ext, intv in config['ports'].items() %}
+      - "{{ ext }}:{{ intv }}"
+{% endfor %}
+{% else %}
+    ports:
+      - "8080:80"
+{% endif %}
+    environment:
+      MYSQL_HOST: postgresql-redos
+      MYSQL_DATABASE: nextcloud
+      MYSQL_USER: gosdocker
+      MYSQL_PASSWORD: {{ config.get('env', {}).get('MYSQL_PASSWORD', 'changeme') }}
+{% if config.get('env', {}).get('TZ') %}
+      TZ: "{{ config.get('env', {}).get('TZ') }}"
+{% endif %}
+{% if config.get('volumes') %}
+    volumes:
+{% for host, container in config['volumes'].items() %}
+      - {{ host }}:{{ container }}
+{% endfor %}
+{% else %}
+    volumes:
+      - nextcloud_data:/var/www/html
+{% endif %}
+    depends_on:
+      - postgresql-redos
+    networks:
+      - gosdocker
+
+===== backend/app/templates/single/prometheus/docker-compose.yml.j2 =====
+  prometheus:
+    image: {{ registry_url or 'dh-mirror.gitverse.ru/prom/prometheus' }}
+    container_name: prometheus
+    restart: unless-stopped
+{% if config.get('ports') %}
+    ports:
+{% for ext, intv in config['ports'].items() %}
+      - "{{ ext }}:{{ intv }}"
+{% endfor %}
+{% else %}
+    ports:
+      - "9090:9090"
+{% endif %}
+{% if config.get('volumes') %}
+    volumes:
+{% for host, container in config['volumes'].items() %}
+      - {{ host }}:{{ container }}
+{% endfor %}
+{% else %}
+    volumes:
+      - prometheus_data:/prometheus
+{% endif %}
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+    networks:
+      - gosdocker
+
+===== backend/app/templates/single/grafana/docker-compose.yml.j2 =====
+  grafana:
+    image: {{ registry_url or 'dh-mirror.gitverse.ru/grafana/grafana' }}
+    container_name: grafana
+    restart: unless-stopped
+{% if config.get('ports') %}
+    ports:
+{% for ext, intv in config['ports'].items() %}
+      - "{{ ext }}:{{ intv }}"
+{% endfor %}
+{% else %}
+    ports:
+      - "3000:3000"
+{% endif %}
+{% if config.get('volumes') %}
+    volumes:
+{% for host, container in config['volumes'].items() %}
+      - {{ host }}:{{ container }}
+{% endfor %}
+{% else %}
+    volumes:
+      - grafana_data:/var/lib/grafana
+{% endif %}
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: {{ config.get('env', {}).get('GF_SECURITY_ADMIN_PASSWORD', 'admin') }}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+{% if config.get('env', {}).get('TZ') %}
+      TZ: "{{ config.get('env', {}).get('TZ') }}"
+{% endif %}
+    depends_on:
+      - prometheus
+    networks:
+      - gosdocker
+
+===== backend/app/templates/stacks/web-stack.yml.j2 =====
+# GosDocker - Web + Data Stack
+# Components: Angie PRO + PostgreSQL (RED OS)
+# Generated: {{ now().strftime('%Y-%m-%d %H:%M:%S') }}
+
+services:
+  angie:
+    image: {{ components[0].registry_url if components else 'dh-mirror.gitverse.ru/riftbit/angie' }}
+    container_name: angie
+    restart: unless-stopped
+{% if configs.get('angie-pro', {}).get('ports') %}
+    ports:
+{% for ext, intv in configs['angie-pro']['ports'].items() %}
+      - "{{ ext }}:{{ intv }}"
+{% endfor %}
+{% endif %}
+    networks:
+      - gosdocker
+
+  postgresql-redos:
+    image: {{ components[1].registry_url if (components | length) > 1 else 'registry.red-soft.ru/ubi8/postgresql-17' }}
+    container_name: postgresql-redos
+    restart: unless-stopped
+{% if configs.get('postgresql-redos', {}).get('ports') %}
+    ports:
+{% for ext, intv in configs['postgresql-redos']['ports'].items() %}
+      - "{{ ext }}:{{ intv }}"
+{% endfor %}
+{% endif %}
+    environment:
+      POSTGRES_DB: gosdocker
+      POSTGRES_USER: gosdocker
+      POSTGRES_PASSWORD: {{ configs.get('postgresql-redos', {}).get('env', {}).get('POSTGRES_PASSWORD', 'changeme') }}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - gosdocker
+
+networks:
+  gosdocker:
+    driver: bridge
+
+volumes:
+  pgdata:
+
+===== frontend/index.html =====
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GosDocker — Каталог Docker Compose</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
+
+===== frontend/src/main.ts =====
+import { createApp } from 'vue'
+import './assets/main.css'
+import App from './App.vue'
+import router from './router'
+
+createApp(App).use(router).mount('#app')
+
+===== frontend/src/App.vue =====
+<script setup lang="ts">
+import { RouterView } from 'vue-router'
+import Footer from './components/Footer.vue'
+</script>
+
+<template>
+  <div class="min-h-screen flex flex-col bg-gray-50">
+    <RouterView />
+    <Footer />
+  </div>
+</template>
+
+===== frontend/src/router/index.ts =====
+import { createRouter, createWebHistory } from 'vue-router'
+import HomeView from '../views/HomeView.vue'
+
+const router = createRouter({
+  history: createWebHistory(import.meta.env.BASE_URL),
+  routes: [
+    {
+      path: '/',
+      name: 'home',
+      component: HomeView
+    },
+    {
+      path: '/catalog',
+      name: 'catalog',
+      component: () => import('../views/CatalogView.vue')
+    },
+    {
+      path: '/components/:slug',
+      name: 'component',
+      component: () => import('../views/ComponentView.vue')
+    },
+    {
+      path: '/stacks',
+      name: 'stacks',
+      component: () => import('../views/StacksView.vue')
+    }
+  ]
+})
+
+export default router
+
+===== frontend/src/types/index.ts =====
+export interface Category {
+  id: string
+  name: string
+  slug: string
+  icon: string
+  description: string | null
+  sort_order: number
+  components_count: number
+  registry_count: number
+  community_count: number
+}
+
+export interface Component {
+  id: string
+  name: string
+  slug: string
+  category: string
+  image: string
+  image_source: string
+  registry_url: string
+  is_registry: boolean
+  registry_number: string | null
+  description: string | null
+  version: string | null
+  default_ports: Record<string, number>
+  default_volumes: Record<string, string>
+  default_env: Record<string, string>
+  variables_schema: Record<string, unknown>
+}
+
+export interface Stack {
+  id: string
+  name: string
+  slug: string
+  description: string
+  is_featured: boolean
+  components: StackComponent[]
+}
+
+export interface StackComponent {
+  name: string
+  slug: string
+  is_registry: boolean
+  image?: string
+  registry_url?: string
+}
+
+export interface ComponentConfig {
+  ports: Record<string, number>
+  volumes: Record<string, string>
+  env: Record<string, string>
+}
+
+===== frontend/src/composables/useApi.ts =====
+import type { Category, Component, Stack, ComponentConfig } from '../types'
+
+const API_BASE = '/api'
+
+export function useApi() {
+  async function fetchCategories(): Promise<Category[]> {
+    const res = await fetch(`${API_BASE}/categories`)
+    if (!res.ok) throw new Error('Failed to fetch categories')
+    return res.json()
+  }
+
+  async function fetchComponents(category?: string): Promise<Component[]> {
+    const url = category
+      ? `${API_BASE}/components?category=${encodeURIComponent(category)}`
+      : `${API_BASE}/components`
+    const res = await fetch(url)
+    if (!res.ok) throw new Error('Failed to fetch components')
+    return res.json()
+  }
+
+  async function fetchStacks(): Promise<Stack[]> {
+    const res = await fetch(`${API_BASE}/stacks`)
+    if (!res.ok) throw new Error('Failed to fetch stacks')
+    return res.json()
+  }
+
+  async function generateStack(
+    slugs: string[],
+    config: Record<string, ComponentConfig>
+  ): Promise<Blob> {
+    const res = await fetch(`${API_BASE}/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ components: slugs, config })
+    })
+    if (!res.ok) throw new Error('Failed to generate stack')
+    return res.blob()
+  }
+
+  return {
+    fetchCategories,
+    fetchComponents,
+    fetchStacks,
+    generateStack
+  }
+}
+
+===== frontend/src/assets/main.css =====
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+===== frontend/src/views/HomeView.vue =====
+<script setup lang="ts">
+import { ref, onMounted, computed } from 'vue'
+import { useApi } from '../composables/useApi'
+import type { Category } from '../types'
+
+const { fetchCategories } = useApi()
+const categories = ref<Category[]>([])
+const loading = ref(true)
+const error = ref<string | null>(null)
+
+const registryCount = computed(() => categories.value.reduce((acc, c) => acc + (c.registry_count || 0), 0))
+const communityCount = computed(() => categories.value.reduce((acc, c) => acc + (c.community_count || 0), 0))
+
+onMounted(async () => {
+  try {
+    categories.value = await fetchCategories()
+  } catch (e) {
+    error.value = 'Не удалось загрузить каталог'
+  } finally {
+    loading.value = false
+  }
+})
+</script>
+
+<template>
+  <div>
+    <!-- Hero Section -->
+    <section class="bg-gradient-to-br from-blue-50 to-indigo-100 border-b">
+      <div class="container mx-auto px-4 py-16 text-center">
+        <h1 class="text-5xl font-bold text-gray-900 mb-4">GosDocker</h1>
+        <p class="text-xl text-gray-600 mb-8">Каталог Docker Compose-сборок для госструктур</p>
+        <div class="flex justify-center gap-4 text-sm">
+          <span class="px-4 py-2 bg-green-100 text-green-700 rounded-full font-medium">
+            🏛 {{ registryCount }}
+            из Реестра РФ
+          </span>
+          <span class="px-4 py-2 bg-blue-100 text-blue-700 rounded-full font-medium">
+            📦 {{ communityCount }}
+            решений комьюнити
+          </span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Navigation Cards -->
+    <section class="container mx-auto px-4 py-12">
+      <h2 class="text-2xl font-bold text-gray-900 mb-8 text-center">Быстрый старт</h2>
+      <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6 max-w-5xl mx-auto">
+
+        <!-- Полный стек (РФ) -->
+        <router-link to="/stacks"
+          class="group block p-6 bg-white rounded-xl shadow-sm border border-green-200 hover:shadow-md hover:border-green-400 transition-all">
+          <div class="flex items-center gap-3 mb-3">
+            <span class="text-3xl">🏛</span>
+            <h3 class="text-lg font-semibold text-gray-900">Полный стек (РФ)</h3>
+          </div>
+          <p class="text-gray-600 text-sm mb-4">
+            Angie PRO + PostgreSQL РЕД ОС + Nextcloud — все из Реестра Минцифры
+          </p>
+          <span class="inline-flex items-center text-green-600 text-sm font-medium group-hover:gap-2 transition-all">
+            Скачать одной кнопкой →
+          </span>
+        </router-link>
+
+        <!-- Полный стек Community -->
+        <router-link to="/stacks"
+          class="group block p-6 bg-white rounded-xl shadow-sm border border-blue-200 hover:shadow-md hover:border-blue-400 transition-all">
+          <div class="flex items-center gap-3 mb-3">
+            <span class="text-3xl">📦</span>
+            <h3 class="text-lg font-semibold text-gray-900">Полный стек Community</h3>
+          </div>
+          <p class="text-gray-600 text-sm mb-4">
+            nginx + PostgreSQL + Prometheus + Grafana — популярные open-source решения
+          </p>
+          <span class="inline-flex items-center text-blue-600 text-sm font-medium group-hover:gap-2 transition-all">
+            Скачать одной кнопкой →
+          </span>
+        </router-link>
+
+        <!-- Каталог компонентов -->
+        <router-link to="/catalog"
+          class="group block p-6 bg-white rounded-xl shadow-sm border border-gray-200 hover:shadow-md hover:border-gray-400 transition-all">
+          <div class="flex items-center gap-3 mb-3">
+            <span class="text-3xl">📋</span>
+            <h3 class="text-lg font-semibold text-gray-900">Каталог компонентов</h3>
+          </div>
+          <p class="text-gray-600 text-sm mb-4">
+            Выберите нужные компоненты и скачайте с настройками
+          </p>
+          <span class="inline-flex items-center text-gray-600 text-sm font-medium group-hover:gap-2 transition-all">
+            Перейти в каталог →
+          </span>
+        </router-link>
+
+      </div>
+    </section>
+
+    <!-- Categories Overview -->
+    <section class="container mx-auto px-4 pb-12">
+      <h2 class="text-2xl font-bold text-gray-900 mb-6 text-center">Категории</h2>
+      <div class="flex flex-wrap justify-center gap-3">
+        <router-link
+          v-for="cat in categories"
+          :key="cat.id"
+          :to="`/catalog?category=${cat.slug}`"
+          class="px-4 py-2 bg-white rounded-lg border border-gray-200 hover:border-gray-400 hover:shadow-sm transition-all text-sm">
+          <span>{{ cat.icon }}</span>
+          {{ cat.name }}
+          <span class="text-gray-400">({{ cat.components_count }})</span>
+        </router-link>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <div v-if="loading" class="text-center py-8 text-gray-500">Загрузка...</div>
+    <div v-if="error" class="text-center py-8 text-red-500">{{ error }}</div>
+  </div>
+</template>
+
+===== frontend/src/views/CatalogView.vue =====
+<script setup lang="ts">
+import { ref, onMounted } from 'vue'
+import { useApi } from '../composables/useApi'
+import type { Category } from '../types'
+import ComponentCard from '../components/ComponentCard.vue'
+
+const { fetchCategories, fetchComponents } = useApi()
+const categories = ref<Category[]>([])
+const selectedCategory = ref<string | null>(null)
+const components = ref<any[]>([])
+const loading = ref(true)
+const error = ref<string | null>(null)
+
+onMounted(async () => {
+  try {
+    categories.value = await fetchCategories()
+    components.value = await fetchComponents()
+  } catch (e) {
+    error.value = 'Ошибка загрузки'
+  } finally {
+    loading.value = false
+  }
+})
+
+async function selectCategory(slug: string | null) {
+  selectedCategory.value = slug
+  loading.value = true
+  try {
+    components.value = await fetchComponents(slug || undefined)
+  } catch (e) {
+    error.value = 'Ошибка загрузки'
+  } finally {
+    loading.value = false
+  }
+}
+</script>
+
+<template>
+  <div class="container mx-auto px-4 py-8">
+    <h1 class="text-3xl font-bold mb-8">Каталог компонентов</h1>
+
+    <!-- Category filters -->
+    <div class="flex gap-2 mb-8 flex-wrap">
+      <button
+        @click="selectCategory(null)"
+        :class="[
+          'px-4 py-2 rounded-full text-sm font-medium transition',
+          selectedCategory === null
+            ? 'bg-gray-900 text-white'
+            : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+        ]"
+      >
+        Все
+      </button>
+      <button
+        v-for="cat in categories"
+        :key="cat.slug"
+        @click="selectCategory(cat.slug)"
+        :class="[
+          'px-4 py-2 rounded-full text-sm font-medium transition',
+          selectedCategory === cat.slug
+            ? 'bg-gray-900 text-white'
+            : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+        ]"
+      >
+        {{ cat.icon }} {{ cat.name }}
+        <span class="text-xs opacity-70">({{ cat.components_count }})</span>
+      </button>
+    </div>
+
+    <!-- Components grid -->
+    <div v-if="loading" class="text-center py-12 text-gray-500">Загрузка...</div>
+    <div v-else-if="error" class="text-center py-12 text-red-500">{{ error }}</div>
+    <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      <ComponentCard
+        v-for="comp in components"
+        :key="comp.slug"
+        :component="comp"
+      />
+    </div>
+  </div>
+</template>
+
+===== frontend/src/views/ComponentView.vue =====
+<script setup lang="ts">
+import { ref, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
+import { useApi } from '../composables/useApi'
+import type { Component } from '../types'
+import SourceBadge from '../components/SourceBadge.vue'
+import ConfigWizard from '../components/ConfigWizard.vue'
+
+const route = useRoute()
+const { fetchComponents } = useApi()
+const components = ref<Component[]>([])
+const component = ref<Component | null>(null)
+const loading = ref(true)
+const error = ref<string | null>(null)
+const showWizard = ref(false)
+
+onMounted(async () => {
+  try {
+    const slug = route.params.slug as string
+    const fetched = await fetchComponents()
+    components.value = fetched
+    component.value = fetched.find(c => c.slug === slug) || null
+    if (!component.value) {
+      error.value = 'Компонент не найден'
+    }
+  } catch (e) {
+    error.value = 'Ошибка загрузки'
+  } finally {
+    loading.value = false
+  }
+})
+</script>
+
+<template>
+  <div class="container mx-auto px-4 py-8">
+    <div v-if="loading" class="text-center py-12 text-gray-500">Загрузка...</div>
+    <div v-else-if="error" class="text-center py-12 text-red-500">{{ error }}</div>
+    <div v-else-if="component" class="max-w-2xl mx-auto">
+      <div class="flex items-start justify-between mb-6">
+        <div>
+          <h1 class="text-3xl font-bold mb-2">{{ component.name }}</h1>
+          <SourceBadge :is-registry="component.is_registry" />
+        </div>
+        <span v-if="component.version" class="text-sm text-gray-500">v{{ component.version }}</span>
+      </div>
+
+      <div class="bg-white rounded-lg shadow-sm border p-6 mb-6">
+        <p class="text-gray-700 mb-4">{{ component.description }}</p>
+
+        <div class="grid grid-cols-2 gap-4 text-sm">
+          <div>
+            <span class="text-gray-500">Образ:</span>
+            <code class="ml-2 text-xs bg-gray-100 px-2 py-1 rounded">{{ component.registry_url }}</code>
+          </div>
+          <div v-if="component.registry_number">
+            <span class="text-gray-500">Реестр:</span>
+            <span class="ml-2">{{ component.registry_number }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-lg shadow-sm border p-6 mb-6">
+        <h2 class="font-semibold mb-4">Порты по умолчанию</h2>
+        <div class="flex gap-2 flex-wrap">
+          <span
+            v-for="(intv, ext) in component.default_ports"
+            :key="ext"
+            class="px-3 py-1 bg-gray-100 rounded text-sm"
+          >
+            {{ ext }} → {{ intv }}
+          </span>
+        </div>
+      </div>
+
+      <button
+        @click="showWizard = true"
+        class="w-full px-6 py-3 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition"
+      >
+        ⚙️ Настроить и скачать
+      </button>
+    </div>
+
+    <ConfigWizard
+      v-if="showWizard && component"
+      :component="component"
+      @close="showWizard = false"
+    />
+  </div>
+</template>
+
+===== frontend/src/views/StacksView.vue =====
+<script setup lang="ts">
+import { ref, onMounted } from 'vue'
+import { useApi } from '../composables/useApi'
+import type { Stack } from '../types'
+import StackCard from '../components/StackCard.vue'
+
+const { fetchStacks } = useApi()
+const stacks = ref<Stack[]>([])
+const loading = ref(true)
+const error = ref<string | null>(null)
+
+onMounted(async () => {
+  try {
+    stacks.value = await fetchStacks()
+  } catch (e) {
+    error.value = 'Ошибка загрузки'
+  } finally {
+    loading.value = false
+  }
+})
+</script>
+
+<template>
+  <div class="container mx-auto px-4 py-8">
+    <h1 class="text-3xl font-bold mb-2">Готовые сборки</h1>
+    <p class="text-gray-600 mb-8">Протестированные комбинации компонентов</p>
+
+    <div v-if="loading" class="text-center py-12 text-gray-500">Загрузка...</div>
+    <div v-else-if="error" class="text-center py-12 text-red-500">{{ error }}</div>
+    <div v-else class="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <StackCard v-for="stack in stacks" :key="stack.slug" :stack="stack" />
+    </div>
+  </div>
+</template>
+
+===== frontend/src/components/Footer.vue =====
+<template>
+  <footer class="mt-auto bg-white border-t py-4 text-center text-sm text-gray-500">
+    <span>Режим: Автономный контур</span>
+  </footer>
+</template>
+
+===== frontend/src/components/SourceBadge.vue =====
+<script setup lang="ts">
+defineProps<{
+  isRegistry: boolean
+}>()
+</script>
+
+<template>
+  <span
+    :class="[
+      'inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium',
+      isRegistry
+        ? 'bg-green-100 text-green-700'
+        : 'bg-blue-100 text-blue-700'
+    ]"
+  >
+    {{ isRegistry ? '🏛 Из Реестра РФ' : '📦 Community' }}
+  </span>
+</template>
+
+===== frontend/src/components/ComponentCard.vue =====
+<script setup lang="ts">
+import { ref } from 'vue'
+import { useRouter } from 'vue-router'
+import type { Component } from '../types'
+import SourceBadge from './SourceBadge.vue'
+import ConfigWizard from './ConfigWizard.vue'
+import { useApi } from '../composables/useApi'
+
+const props = defineProps<{
+  component: Component
+}>()
+
+const router = useRouter()
+const showWizard = ref(false)
+const { generateStack } = useApi()
+const downloading = ref(false)
+
+function openDetail() {
+  router.push({ name: 'component', params: { slug: props.component.slug } })
+}
+
+async function quickDownload() {
+  downloading.value = true
+  try {
+    const blob = await generateStack([props.component.slug], {
+      [props.component.slug]: {
+        ports: { ...props.component.default_ports },
+        volumes: { ...props.component.default_volumes },
+        env: { ...props.component.default_env }
+      }
+    })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${props.component.slug}.zip`
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (e) {
+    console.error('Download failed', e)
+  } finally {
+    downloading.value = false
+  }
+}
+</script>
+
+<template>
+  <div class="bg-white rounded-lg shadow-sm border p-6 hover:shadow-md transition cursor-pointer" @click="openDetail">
+    <div class="flex items-start justify-between mb-3">
+      <div>
+        <h3 class="text-lg font-semibold text-gray-900">{{ component.name }}</h3>
+        <SourceBadge :is-registry="component.is_registry" />
+      </div>
+      <span v-if="component.version" class="text-sm text-gray-500">v{{ component.version }}</span>
+    </div>
+
+    <p class="text-gray-600 text-sm mb-3 line-clamp-2">
+      {{ component.description }}
+    </p>
+
+    <code class="text-xs text-gray-400 block mb-4 truncate">
+      {{ component.registry_url }}
+    </code>
+
+    <div class="flex gap-2">
+      <button
+        @click.stop="quickDownload"
+        :disabled="downloading"
+        class="flex-1 px-3 py-2 bg-gray-100 text-gray-700 rounded text-sm hover:bg-gray-200 disabled:opacity-50"
+      >
+        {{ downloading ? '⏳' : '📥 Скачать' }}
+      </button>
+      <button class="flex-1 px-3 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700" @click.stop="showWizard = true">
+        ⚙️ Настроить
+      </button>
+    </div>
+  </div>
+  <ConfigWizard v-if="showWizard" :component="component" @close="showWizard = false" />
+</template>
+
+===== frontend/src/components/StackCard.vue =====
+<script setup lang="ts">
+import { ref } from 'vue'
+import type { Stack } from '../types'
+import SourceBadge from './SourceBadge.vue'
+import { useApi } from '../composables/useApi'
+
+const props = defineProps<{
+  stack: Stack
+}>()
+
+const { generateStack } = useApi()
+const downloading = ref(false)
+
+async function downloadStack() {
+  downloading.value = true
+  try {
+    const slugs = props.stack.components.map(c => c.slug)
+    const blob = await generateStack(slugs, {})
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${props.stack.slug}.zip`
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (e) {
+    console.error('Download failed', e)
+  } finally {
+    downloading.value = false
+  }
+}
+</script>
+
+<template>
+  <div class="bg-white rounded-lg shadow-sm border p-6">
+    <div class="flex items-start justify-between mb-3">
+      <div class="flex items-center gap-2">
+        <h3 class="text-lg font-semibold text-gray-900">{{ stack.name }}</h3>
+        <span v-if="stack.is_featured" class="px-2 py-0.5 bg-yellow-100 text-yellow-700 text-xs rounded-full">
+          ★ Избранное
+        </span>
+      </div>
+    </div>
+
+    <p class="text-gray-600 text-sm mb-4">{{ stack.description }}</p>
+
+    <div class="flex flex-wrap gap-2 mb-4">
+      <span
+        v-for="comp in stack.components"
+        :key="comp.slug"
+        class="px-2 py-1 bg-gray-50 text-gray-600 text-xs rounded border"
+      >
+        {{ comp.name }}
+        <SourceBadge :is-registry="comp.is_registry" class="ml-1" />
+      </span>
+    </div>
+
+    <button class="w-full px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 transition" @click="downloadStack" :disabled="downloading">
+      {{ downloading ? '⏳...' : '📥 Скачать сборку' }}
+    </button>
+  </div>
+</template>
+
+===== frontend/src/components/ConfigWizard.vue =====
+<script setup lang="ts">
+import { ref, computed } from 'vue'
+import type { Component, ComponentConfig } from '../types'
+import { useApi } from '../composables/useApi'
+
+const props = defineProps<{
+  component: Component
+}>()
+
+const emit = defineEmits<{
+  (e: 'close'): void
+}>()
+
+const { generateStack } = useApi()
+
+interface PortEntry {
+  external: string
+  internal: number
+}
+
+const portEntries = ref<PortEntry[]>(
+  Object.entries(props.component.default_ports).map(([ext, int]) => ({
+    external: ext,
+    internal: int as number
+  }))
+)
+
+const config = computed<ComponentConfig>(() => ({
+  ports: Object.fromEntries(portEntries.value.map(p => [p.external, p.internal])),
+  volumes: { ...props.component.default_volumes },
+  env: { ...props.component.default_env }
+}))
+
+const downloading = ref(false)
+const error = ref<string | null>(null)
+
+async function download() {
+  downloading.value = true
+  error.value = null
+  try {
+    const blob = await generateStack([props.component.slug], {
+      [props.component.slug]: config.value
+    })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${props.component.slug}.zip`
+    a.click()
+    URL.revokeObjectURL(url)
+    emit('close')
+  } catch (e) {
+    error.value = 'Ошибка генерации'
+  } finally {
+    downloading.value = false
+  }
+}
+</script>
+
+<template>
+  <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" @click.self="emit('close')">
+    <div class="bg-white rounded-lg shadow-xl max-w-md w-full p-6 max-h-[90vh] overflow-y-auto">
+      <h2 class="text-xl font-bold mb-4">⚙️ Настройка: {{ component.name }}</h2>
+
+      <!-- Ports -->
+      <div class="mb-4">
+        <label class="block text-sm font-medium mb-2 text-gray-700">Порты</label>
+        <div class="space-y-2">
+          <div v-for="(port, idx) in portEntries" :key="idx" class="flex items-center gap-2">
+            <input
+              v-model="port.external"
+              class="w-24 px-2 py-1 border rounded text-sm"
+              placeholder="Внешний"
+            />
+            <span class="text-gray-400">→</span>
+            <input
+              v-model.number="port.internal"
+              class="w-24 px-2 py-1 border rounded text-sm"
+              type="number"
+              placeholder="Внутр"
+            />
+          </div>
+        </div>
+      </div>
+
+      <!-- Env -->
+      <div class="mb-4">
+        <label class="block text-sm font-medium mb-2 text-gray-700">Переменные окружения</label>
+        <div class="space-y-2">
+          <div v-for="(value, key) in config.env" :key="key" class="flex items-center gap-2">
+            <input
+              :value="key"
+              class="w-32 px-2 py-1 border rounded text-sm bg-gray-50"
+              disabled
+            />
+            <input
+              :value="value"
+              @input="(e) => { const t = e.target as HTMLInputElement; config.env[key as string] = t.value }"
+              class="flex-1 px-2 py-1 border rounded text-sm"
+            />
+          </div>
+        </div>
+      </div>
+
+      <div v-if="error" class="mb-4 text-sm text-red-500">{{ error }}</div>
+
+      <div class="flex gap-2">
+        <button
+          @click="emit('close')"
+          class="flex-1 px-4 py-2 border rounded hover:bg-gray-50 transition"
+        >
+          Отмена
+        </button>
+        <button
+          @click="download"
+          :disabled="downloading"
+          class="flex-1 px-4 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 transition disabled:opacity-50"
+        >
+          {{ downloading ? '⏳...' : '📥 Скачать' }}
+        </button>
+      </div>
+    </div>
+  </div>
+</template>
+
+===== frontend/package.json =====
+{
+  "name": "gosdocker-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "vue": "^3.4.0",
+    "vue-router": "^4.2.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.0.0",
+    "autoprefixer": "^10.4.0",
+    "postcss": "^8.4.0",
+    "tailwindcss": "^3.4.0",
+    "typescript": "^5.3.0",
+    "vite": "^5.0.0",
+    "vue-tsc": "^1.8.0"
+  }
+}
+
+===== frontend/vite.config.ts =====
+import { defineConfig } from 'vite'
+import vue from '@vitejs/plugin-vue'
+
+export default defineConfig({
+  plugins: [vue()],
+  server: {
+    port: 3000,
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8000',
+        changeOrigin: true
+      }
+    }
+  }
+})
+
+===== frontend/tailwind.config.js =====
+/** @type {import('tailwindcss').Config} */
+export default {
+  content: [
+    "./index.html",
+    "./src/**/*.{vue,js,ts,jsx,tsx}",
+  ],
+  theme: {
+    extend: {
+      colors: {
+        'registry': '#059669',
+        'community': '#2563EB',
+      }
+    },
+  },
+  plugins: [],
+}
+
+===== frontend/tsconfig.json =====
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "module": "ESNext",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "preserve",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.vue"],
+  "references": [{ "path": "./tsconfig.node.json" }]
+}
+
+===== frontend/tsconfig.node.json =====
+{
+  "compilerOptions": {
+    "composite": true,
+    "skipLibCheck": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true
+  },
+  "include": ["vite.config.ts"]
+}
+
+===== frontend/postcss.config.js =====
+export default {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+}
+
+===== frontend/nginx.conf =====
+server {
+    listen 80;
+    server_name localhost;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+
+===== frontend/Dockerfile =====
+FROM node:20-alpine as build
+
+WORKDIR /app
+COPY package*.json ./
+RUN npm install
+COPY . .
+RUN npx vite build
+
+FROM nginx:alpine
+COPY --from=build /app/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]

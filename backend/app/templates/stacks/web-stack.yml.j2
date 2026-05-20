@@ -1,0 +1,43 @@
+# GosDocker - Web + Data Stack
+# Components: Angie PRO + PostgreSQL (RED OS)
+# Generated: {{ now().strftime('%Y-%m-%d %H:%M:%S') }}
+
+services:
+  angie:
+    image: {{ components[0].registry_url if components else 'dh-mirror.gitverse.ru/riftbit/angie' }}
+    container_name: angie
+    restart: unless-stopped
+{% if configs.get('angie-pro', {}).get('ports') %}
+    ports:
+{% for ext, intv in configs['angie-pro']['ports'].items() %}
+      - "{{ ext }}:{{ intv }}"
+{% endfor %}
+{% endif %}
+    networks:
+      - gosdocker
+
+  postgresql-redos:
+    image: {{ components[1].registry_url if (components | length) > 1 else 'registry.red-soft.ru/ubi8/postgresql-17' }}
+    container_name: postgresql-redos
+    restart: unless-stopped
+{% if configs.get('postgresql-redos', {}).get('ports') %}
+    ports:
+{% for ext, intv in configs['postgresql-redos']['ports'].items() %}
+      - "{{ ext }}:{{ intv }}"
+{% endfor %}
+{% endif %}
+    environment:
+      POSTGRES_DB: gosdocker
+      POSTGRES_USER: gosdocker
+      POSTGRES_PASSWORD: {{ configs.get('postgresql-redos', {}).get('env', {}).get('POSTGRES_PASSWORD', 'changeme') }}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - gosdocker
+
+networks:
+  gosdocker:
+    driver: bridge
+
+volumes:
+  pgdata:

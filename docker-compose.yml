@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://gosdocker:secret@db:5432/gosdocker
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - gosdocker
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - backend
+    networks:
+      - gosdocker
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - gosdocker
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=gosdocker
+      - POSTGRES_USER=gosdocker
+      - POSTGRES_PASSWORD=secret
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - gosdocker
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gosdocker"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
+
+networks:
+  gosdocker:
+    driver: bridge

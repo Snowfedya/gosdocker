@@ -1,0 +1,24 @@
+  angie-pro:
+    image: {{ registry_url or 'dh-mirror.gitverse.ru/riftbit/angie' }}
+    container_name: angie-pro
+    restart: unless-stopped
+{% if config.get('ports') %}
+    ports:
+{% for ext, intv in config['ports'].items() %}
+      - "{{ ext }}:{{ intv }}"
+{% endfor %}
+{% endif %}
+{% if config.get('volumes') %}
+    volumes:
+{% for host, container in config['volumes'].items() %}
+      - {{ host }}:{{ container }}
+{% endfor %}
+{% endif %}
+{% if config.get('env') %}
+    environment:
+{% for key, value in config['env'].items() %}
+      {{ key }}: "{{ value }}"
+{% endfor %}
+{% endif %}
+    networks:
+      - gosdocker

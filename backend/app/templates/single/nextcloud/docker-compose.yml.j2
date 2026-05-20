@@ -1,0 +1,34 @@
+  nextcloud:
+    image: {{ registry_url or 'dh-mirror.gitverse.ru/library/nextcloud' }}
+    container_name: nextcloud
+    restart: unless-stopped
+{% if config.get('ports') %}
+    ports:
+{% for ext, intv in config['ports'].items() %}
+      - "{{ ext }}:{{ intv }}"
+{% endfor %}
+{% else %}
+    ports:
+      - "8080:80"
+{% endif %}
+    environment:
+      MYSQL_HOST: postgresql-redos
+      MYSQL_DATABASE: nextcloud
+      MYSQL_USER: gosdocker
+      MYSQL_PASSWORD: {{ config.get('env', {}).get('MYSQL_PASSWORD', 'changeme') }}
+{% if config.get('env', {}).get('TZ') %}
+      TZ: "{{ config.get('env', {}).get('TZ') }}"
+{% endif %}
+{% if config.get('volumes') %}
+    volumes:
+{% for host, container in config['volumes'].items() %}
+      - {{ host }}:{{ container }}
+{% endfor %}
+{% else %}
+    volumes:
+      - nextcloud_data:/var/www/html
+{% endif %}
+    depends_on:
+      - postgresql-redos
+    networks:
+      - gosdocker

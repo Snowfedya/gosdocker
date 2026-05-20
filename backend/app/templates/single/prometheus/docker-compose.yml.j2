@@ -1,0 +1,28 @@
+  prometheus:
+    image: {{ registry_url or 'dh-mirror.gitverse.ru/prom/prometheus' }}
+    container_name: prometheus
+    restart: unless-stopped
+{% if config.get('ports') %}
+    ports:
+{% for ext, intv in config['ports'].items() %}
+      - "{{ ext }}:{{ intv }}"
+{% endfor %}
+{% else %}
+    ports:
+      - "9090:9090"
+{% endif %}
+{% if config.get('volumes') %}
+    volumes:
+{% for host, container in config['volumes'].items() %}
+      - {{ host }}:{{ container }}
+{% endfor %}
+{% else %}
+    volumes:
+      - prometheus_data:/prometheus
+{% endif %}
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+    networks:
+      - gosdocker

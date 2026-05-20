@@ -1,0 +1,33 @@
+  grafana:
+    image: {{ registry_url or 'dh-mirror.gitverse.ru/grafana/grafana' }}
+    container_name: grafana
+    restart: unless-stopped
+{% if config.get('ports') %}
+    ports:
+{% for ext, intv in config['ports'].items() %}
+      - "{{ ext }}:{{ intv }}"
+{% endfor %}
+{% else %}
+    ports:
+      - "3000:3000"
+{% endif %}
+{% if config.get('volumes') %}
+    volumes:
+{% for host, container in config['volumes'].items() %}
+      - {{ host }}:{{ container }}
+{% endfor %}
+{% else %}
+    volumes:
+      - grafana_data:/var/lib/grafana
+{% endif %}
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: {{ config.get('env', {}).get('GF_SECURITY_ADMIN_PASSWORD', 'admin') }}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+{% if config.get('env', {}).get('TZ') %}
+      TZ: "{{ config.get('env', {}).get('TZ') }}"
+{% endif %}
+    depends_on:
+      - prometheus
+    networks:
+      - gosdocker
