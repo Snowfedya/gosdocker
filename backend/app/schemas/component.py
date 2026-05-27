@@ -19,6 +19,8 @@ class ComponentDetail(ComponentBase):
     default_volumes: dict = {}
     default_env: dict = {}
     variables_schema: dict = {}
+    has_registry: bool = False
+    build_method: str | None = None
 
     class Config:
         from_attributes = True

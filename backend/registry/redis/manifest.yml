@@ -1,0 +1,46 @@
+component:
+  slug: redis
+  name: Redis
+  version: "7.2.7"
+  category: databases
+  description: "Хранилище структур данных в памяти с открытым исходным кодом"
+  source_url: "https://github.com/redis/redis/archive/refs/tags/7.2.7.tar.gz"
+  community_url: "https://github.com/redis/redis"
+  documentation_url: "https://redis.io/docs"
+  build_method: make
+  build_args:
+    VERSION: "7.2.7"
+    MAKE_FLAGS: "-j$(nproc)"
+  dependencies:
+    requires: []
+    provides: [cache, key-value-store]
+  ports:
+    redis: 6379
+  default_env:
+    TZ: Europe/Moscow
+  security:
+    basic:
+      read_only: false
+      cap_drop: []
+      no_new_privileges: false
+    standard:
+      read_only: true
+      cap_drop: ["ALL"]
+      cap_add: ["CHOWN", "SETUID", "SETGID"]
+      no_new_privileges: true
+      healthcheck:
+        test: ["CMD-SHELL", "redis-cli ping || exit 1"]
+        interval: "10s"
+        timeout: "5s"
+        retries: 5
+    hardened:
+      read_only: true
+      cap_drop: ["ALL"]
+      cap_add: ["CHOWN"]
+      no_new_privileges: true
+      security_opt: ["seccomp:default", "no-new-privileges:true"]
+      healthcheck:
+        test: ["CMD-SHELL", "redis-cli ping || exit 1"]
+        interval: "10s"
+        timeout: "5s"
+        retries: 5

@@ -2,9 +2,29 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
+from pathlib import Path
 from ..database import get_db
 from ..models import Component, Category
 from ..schemas.component import ComponentDetail
+
+REGISTRY_DIR = Path(__file__).parent.parent.parent / "registry"
+
+
+def _load_manifest_meta(slug: str) -> dict:
+    """Load registry build info for a slug, or return empty."""
+    import yaml
+    manifest_path = REGISTRY_DIR / slug / "manifest.yml"
+    if not manifest_path.exists():
+        return {"has_registry": False, "build_method": None}
+    try:
+        data = yaml.safe_load(manifest_path.read_text())
+        comp = data.get("component", {})
+        return {
+            "has_registry": True,
+            "build_method": comp.get("build_method"),
+        }
+    except Exception:
+        return {"has_registry": False, "build_method": None}
 
 router = APIRouter(prefix="/api/components", tags=["components"])
 
@@ -42,7 +62,9 @@ async def list_components(
             default_ports=comp.default_ports or {},
             default_volumes=comp.default_volumes or {},
             default_env=comp.default_env or {},
-            variables_schema=comp.variables_schema or {}
+            variables_schema=comp.variables_schema or {},
+            has_registry=_load_manifest_meta(comp.slug)["has_registry"],
+            build_method=_load_manifest_meta(comp.slug)["build_method"],
         )
         for comp in components
     ]
@@ -71,5 +93,7 @@ async def get_component(slug: str, db: AsyncSession = Depends(get_db)):
         default_ports=comp.default_ports or {},
         default_volumes=comp.default_volumes or {},
         default_env=comp.default_env or {},
-        variables_schema=comp.variables_schema or {}
+        variables_schema=comp.variables_schema or {},
+        has_registry=_load_manifest_meta(comp.slug)["has_registry"],
+        build_method=_load_manifest_meta(comp.slug)["build_method"],
     )

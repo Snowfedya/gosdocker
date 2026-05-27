@@ -1,0 +1,47 @@
+component:
+  slug: clickhouse-redos
+  name: ClickHouse (РЕД ОС)
+  version: "24.3.12.72"
+  category: databases
+  description: "Высокопроизводительная колоночная СУБД для аналитики, реестр РЕД ОС"
+  source_url: "https://github.com/ClickHouse/ClickHouse/archive/refs/tags/v24.3.12.72-lts.tar.gz"
+  community_url: "https://github.com/ClickHouse/ClickHouse"
+  documentation_url: "https://clickhouse.com/docs"
+  build_method: cmake
+  build_args:
+    VERSION: "24.3.12.72"
+    CMAKE_FLAGS: "-DCMAKE_BUILD_TYPE=Release -DENABLE_TESTS=OFF -DENABLE_UTILS=OFF"
+  dependencies:
+    requires: []
+    provides: [analytics-database, columnar-db]
+  ports:
+    http: 8123
+    native: 9000
+  default_env:
+    TZ: Europe/Moscow
+  security:
+    basic:
+      read_only: false
+      cap_drop: []
+      no_new_privileges: false
+    standard:
+      read_only: true
+      cap_drop: ["ALL"]
+      cap_add: ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
+      no_new_privileges: true
+      healthcheck:
+        test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1' || exit 1"]
+        interval: "30s"
+        timeout: "10s"
+        retries: 3
+    hardened:
+      read_only: true
+      cap_drop: ["ALL"]
+      cap_add: ["CHOWN", "DAC_OVERRIDE"]
+      no_new_privileges: true
+      security_opt: ["seccomp:default", "no-new-privileges:true"]
+      healthcheck:
+        test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1' || exit 1"]
+        interval: "30s"
+        timeout: "10s"
+        retries: 3

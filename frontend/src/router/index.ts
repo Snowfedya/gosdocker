@@ -7,24 +7,38 @@ const router = createRouter({
     {
       path: '/',
       name: 'home',
-      component: HomeView
+      component: HomeView,
     },
     {
       path: '/catalog',
       name: 'catalog',
-      component: () => import('../views/CatalogView.vue')
+      component: () => import('../views/CatalogView.vue'),
     },
     {
       path: '/components/:slug',
       name: 'component',
-      component: () => import('../views/ComponentView.vue')
+      component: () => import('../views/ComponentView.vue'),
     },
     {
       path: '/stacks',
       name: 'stacks',
-      component: () => import('../views/StacksView.vue')
-    }
-  ]
+      component: () => import('../views/StacksView.vue'),
+    },
+    {
+      path: '/registry',
+      redirect: '/catalog',
+    },
+    {
+      path: '/constructor',
+      name: 'constructor',
+      component: () => import('../views/ConstructorView.vue'),
+    },
+    {
+      path: '/:pathMatch(.*)*',
+      name: 'not-found',
+      component: () => import('../views/NotFoundView.vue'),
+    },
+  ],
 })
 
 export default router

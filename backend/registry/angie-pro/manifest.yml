@@ -1,0 +1,47 @@
+component:
+  slug: angie-pro
+  name: Angie PRO
+  version: "1.10.0"
+  category: web-servers
+  description: "Российский веб-сервер (форк Nginx), внесён в Реестр ПО Минцифры №17604"
+  source_url: "https://angie.software/ru/download/"
+  community_url: "https://github.com/angie/angie"
+  documentation_url: "https://angie.software/ru/"
+  build_method: configure_make
+  build_args:
+    VERSION: "1.10.0"
+    CONFIGURE_FLAGS: "--with-http_ssl_module --with-http_v2_module --with-http_gzip_static_module --with-http_realip_module"
+  dependencies:
+    requires: []
+    provides: [web-server, reverse-proxy]
+  ports:
+    http: 80
+    https: 443
+  default_env:
+    TZ: Europe/Moscow
+  security:
+    basic:
+      read_only: false
+      cap_drop: []
+      no_new_privileges: false
+    standard:
+      read_only: true
+      cap_drop: ["ALL"]
+      cap_add: ["NET_BIND_SERVICE", "CHOWN"]
+      no_new_privileges: true
+      healthcheck:
+        test: ["CMD-SHELL", "curl -f http://localhost/ || exit 1"]
+        interval: "30s"
+        timeout: "10s"
+        retries: 3
+    hardened:
+      read_only: true
+      cap_drop: ["ALL"]
+      cap_add: ["NET_BIND_SERVICE"]
+      no_new_privileges: true
+      security_opt: ["seccomp:default", "no-new-privileges:true"]
+      healthcheck:
+        test: ["CMD-SHELL", "curl -f http://localhost/ || exit 1"]
+        interval: "30s"
+        timeout: "10s"
+        retries: 3

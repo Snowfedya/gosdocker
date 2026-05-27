@@ -1,0 +1,49 @@
+component:
+  slug: postgresql-redos
+  name: PostgreSQL РЕД ОС
+  version: "17.2"
+  category: databases
+  description: "Российская СУБД на базе PostgreSQL 17 для РЕД ОС"
+  source_url: "https://ftp.postgresql.org/pub/source/v17.2/postgresql-17.2.tar.bz2"
+  community_url: "https://github.com/postgres/postgres"
+  documentation_url: "https://www.postgresql.org/docs/17/"
+  build_method: configure_make
+  build_args:
+    VERSION: "17.2"
+    CONFIGURE_FLAGS: "--with-openssl --with-icu --with-readline --with-libxml"
+  dependencies:
+    requires: []
+    provides: [database]
+  ports:
+    postgresql: 5432
+  default_env:
+    POSTGRES_PASSWORD: changeme
+    POSTGRES_DB: gosdocker
+    POSTGRES_USER: gosdocker
+    TZ: Europe/Moscow
+  security:
+    basic:
+      read_only: false
+      cap_drop: []
+      no_new_privileges: false
+    standard:
+      read_only: true
+      cap_drop: ["ALL"]
+      cap_add: ["CHOWN", "DAC_OVERRIDE", "SETUID", "SETGID"]
+      no_new_privileges: true
+      healthcheck:
+        test: ["CMD-SHELL", "pg_isready -U gosdocker || exit 1"]
+        interval: "10s"
+        timeout: "5s"
+        retries: 5
+    hardened:
+      read_only: true
+      cap_drop: ["ALL"]
+      cap_add: ["CHOWN", "DAC_OVERRIDE", "SETUID", "SETGID"]
+      no_new_privileges: true
+      security_opt: ["seccomp:default", "no-new-privileges:true"]
+      healthcheck:
+        test: ["CMD-SHELL", "pg_isready -U gosdocker || exit 1"]
+        interval: "10s"
+        timeout: "5s"
+        retries: 5

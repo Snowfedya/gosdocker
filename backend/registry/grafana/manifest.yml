@@ -1,0 +1,48 @@
+component:
+  slug: grafana
+  name: Grafana
+  version: "11.4.0"
+  category: monitoring
+  description: "Платформа для визуализации метрик и аналитики с дашбордами"
+  source_url: "https://github.com/grafana/grafana/archive/refs/tags/v11.4.0.tar.gz"
+  community_url: null
+  documentation_url: "https://grafana.com/docs/"
+  build_method: node_go
+  build_args:
+    VERSION: "11.4.0"
+    GO_VERSION: "1.23"
+    NODE_VERSION: "20"
+  dependencies:
+    requires: [monitoring]
+    provides: [dashboards]
+  ports:
+    http: 3000
+  default_env:
+    GF_SECURITY_ADMIN_PASSWORD: admin
+    TZ: Europe/Moscow
+  security:
+    basic:
+      read_only: false
+      cap_drop: []
+      no_new_privileges: false
+    standard:
+      read_only: true
+      cap_drop: ["ALL"]
+      cap_add: ["NET_BIND_SERVICE"]
+      no_new_privileges: true
+      healthcheck:
+        test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
+        interval: "30s"
+        timeout: "10s"
+        retries: 3
+    hardened:
+      read_only: true
+      cap_drop: ["ALL"]
+      cap_add: ["NET_BIND_SERVICE"]
+      no_new_privileges: true
+      security_opt: ["seccomp:default", "no-new-privileges:true"]
+      healthcheck:
+        test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
+        interval: "30s"
+        timeout: "10s"
+        retries: 3

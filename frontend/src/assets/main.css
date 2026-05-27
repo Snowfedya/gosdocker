@@ -1,3 +1,145 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ===== Design System: CSS Custom Properties ===== */
+:root {
+  --color-primary: #2563eb;
+  --color-primary-light: #dbeafe;
+  --color-primary-dark: #1e40af;
+  --color-registry: #059669;
+  --color-registry-light: #d1fae5;
+  --color-community: #2563eb;
+  --color-community-light: #dbeafe;
+  --color-surface: #ffffff;
+  --color-surface-hover: #f9fafb;
+  --color-surface-alt: #f3f4f6;
+  --color-border: #e5e7eb;
+  --color-text: #111827;
+  --color-text-secondary: #6b7280;
+  --color-text-muted: #9ca3af;
+  --color-success: #10b981;
+  --color-warning: #f59e0b;
+  --color-error: #ef4444;
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+}
+
+/* Dark Theme */
+.dark {
+  --color-primary: #60a5fa;
+  --color-primary-light: #1e3a5f;
+  --color-primary-dark: #93c5fd;
+  --color-surface: #0f172a;
+  --color-surface-hover: #1e293b;
+  --color-surface-alt: #1e293b;
+  --color-border: #334155;
+  --color-text: #f1f5f9;
+  --color-text-secondary: #94a3b8;
+  --color-text-muted: #64748b;
+}
+
+/* ===== Base Styles ===== */
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  color: var(--color-text);
+  background-color: #f9fafb;
+}
+
+.dark body,
+.dark .bg-gray-50 {
+  background-color: var(--color-surface);
+}
+
+/* ===== Utility Classes ===== */
+@layer components {
+  .btn-primary {
+    @apply inline-flex items-center gap-2 px-5 py-2.5 bg-primary-600 text-white rounded-lg font-medium
+           hover:bg-primary-700 active:bg-primary-800 transition-all duration-200
+           disabled:opacity-50 disabled:cursor-not-allowed
+           focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center gap-2 px-5 py-2.5 bg-gray-100 text-gray-700 rounded-lg font-medium
+           hover:bg-gray-200 active:bg-gray-300 transition-all duration-200
+           disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-ghost {
+    @apply inline-flex items-center gap-2 px-4 py-2 text-gray-600 rounded-lg font-medium
+           hover:bg-gray-100 active:bg-gray-200 transition-all duration-200;
+  }
+
+  .card {
+    @apply bg-white rounded-xl border border-gray-200 shadow-sm
+           hover:shadow-md hover:border-gray-300 transition-all duration-200;
+  }
+
+  .card-registry {
+    @apply card border-emerald-200 hover:border-emerald-400;
+  }
+
+  .card-community {
+    @apply card border-blue-200 hover:border-blue-400;
+  }
+
+  .badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+  }
+
+  .badge-registry {
+    @apply badge bg-emerald-100 text-emerald-700;
+  }
+
+  .badge-community {
+    @apply badge bg-blue-100 text-blue-700;
+  }
+
+  .badge-featured {
+    @apply badge bg-amber-100 text-amber-700;
+  }
+
+  .skeleton {
+    @apply bg-gray-200 rounded animate-pulse;
+  }
+
+  .page-container {
+    @apply container mx-auto px-4 sm:px-6 lg:px-8 py-8;
+  }
+
+  .section-title {
+    @apply text-2xl sm:text-3xl font-bold text-gray-900;
+  }
+}
+
+/* ===== Scrollbar Styling ===== */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}
+
+/* ===== Transitions ===== */
+.page-enter-active,
+.page-leave-active {
+  transition: opacity 0.2s ease;
+}
+.page-enter-from,
+.page-leave-to {
+  opacity: 0;
+}

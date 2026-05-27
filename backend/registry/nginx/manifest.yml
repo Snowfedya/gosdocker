@@ -1,0 +1,47 @@
+component:
+  slug: nginx
+  name: nginx
+  version: "1.27.4"
+  category: web-servers
+  description: "Высокопроизводительный HTTP-сервер и обратный прокси"
+  source_url: "https://nginx.org/download/nginx-1.27.4.tar.gz"
+  community_url: "https://github.com/nginx/nginx"
+  documentation_url: "https://nginx.org/en/docs/"
+  build_method: configure_make
+  build_args:
+    VERSION: "1.27.4"
+    CONFIGURE_FLAGS: "--with-http_ssl_module --with-http_v2_module --with-http_gzip_static_module"
+  dependencies:
+    requires: []
+    provides: [web-server, reverse-proxy]
+  ports:
+    http: 80
+    https: 443
+  default_env:
+    TZ: Europe/Moscow
+  security:
+    basic:
+      read_only: false
+      cap_drop: []
+      no_new_privileges: false
+    standard:
+      read_only: true
+      cap_drop: ["ALL"]
+      cap_add: ["NET_BIND_SERVICE", "CHOWN"]
+      no_new_privileges: true
+      healthcheck:
+        test: ["CMD-SHELL", "curl -f http://localhost/ || exit 1"]
+        interval: "30s"
+        timeout: "10s"
+        retries: 3
+    hardened:
+      read_only: true
+      cap_drop: ["ALL"]
+      cap_add: ["NET_BIND_SERVICE"]
+      no_new_privileges: true
+      security_opt: ["seccomp:default", "no-new-privileges:true"]
+      healthcheck:
+        test: ["CMD-SHELL", "curl -f http://localhost/ || exit 1"]
+        interval: "30s"
+        timeout: "10s"
+        retries: 3

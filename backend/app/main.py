@@ -3,7 +3,7 @@ from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
-from .api import categories_router, components_router, stacks_router, generate_router
+from .api import categories_router, components_router, stacks_router, generate_router, registry_router, constructor_router
 from .database import get_db
 
 logging.basicConfig(
@@ -19,7 +19,13 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://gosdocker.ru", "http://gosdocker.ru"],
+    allow_origins=[
+        "https://gosdocker.ru",
+        "http://gosdocker.ru",
+        "http://localhost:3000",
+        "http://localhost:8080",
+        "http://localhost:8000",
+    ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
@@ -29,6 +35,8 @@ app.include_router(categories_router)
 app.include_router(components_router)
 app.include_router(stacks_router)
 app.include_router(generate_router)
+app.include_router(registry_router)
+app.include_router(constructor_router)
 
 @app.get("/health")
 async def health(db: AsyncSession = Depends(get_db)):

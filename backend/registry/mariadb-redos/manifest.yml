@@ -1,0 +1,47 @@
+component:
+  slug: mariadb-redos
+  name: MariaDB (РЕД ОС)
+  version: "10.6.20"
+  category: databases
+  description: "Реляционная СУБД MariaDB с открытым исходным кодом, реестр РЕД ОС"
+  source_url: "https://github.com/MariaDB/server/archive/refs/tags/mariadb-10.6.20.tar.gz"
+  community_url: "https://github.com/MariaDB/server"
+  documentation_url: "https://mariadb.com/docs"
+  build_method: cmake
+  build_args:
+    VERSION: "10.6.20"
+    CMAKE_FLAGS: "-DCMAKE_BUILD_TYPE=Release -DWITH_UNIT_TESTS=OFF -DWITHOUT_MROONGA=1 -DWITHOUT_TOKUDB=1"
+  dependencies:
+    requires: []
+    provides: [database, relational-db]
+  ports:
+    mysql: 3306
+  default_env:
+    MARIADB_ROOT_PASSWORD: changeme
+    TZ: Europe/Moscow
+  security:
+    basic:
+      read_only: false
+      cap_drop: []
+      no_new_privileges: false
+    standard:
+      read_only: true
+      cap_drop: ["ALL"]
+      cap_add: ["CHOWN", "DAC_OVERRIDE", "SETUID", "SETGID"]
+      no_new_privileges: true
+      healthcheck:
+        test: ["CMD-SHELL", "mysqladmin ping -uroot -p${MARIADB_ROOT_PASSWORD} || exit 1"]
+        interval: "10s"
+        timeout: "5s"
+        retries: 5
+    hardened:
+      read_only: true
+      cap_drop: ["ALL"]
+      cap_add: ["CHOWN", "DAC_OVERRIDE", "SETUID", "SETGID"]
+      no_new_privileges: true
+      security_opt: ["seccomp:default", "no-new-privileges:true"]
+      healthcheck:
+        test: ["CMD-SHELL", "mysqladmin ping -uroot -p${MARIADB_ROOT_PASSWORD} || exit 1"]
+        interval: "10s"
+        timeout: "5s"
+        retries: 5
