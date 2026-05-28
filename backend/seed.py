@@ -27,7 +27,7 @@ COMPONENTS = [
         "version": "1.10.0",
         "default_ports": {"80": 80, "443": 443},
         "default_env": {"TZ": "Europe/Moscow"},
-        "template_file": "single/angie/docker-compose.yml.j2"
+        "template_file": "single/angie-pro/docker-compose.yml.j2"
     },
     {
         "name": "nginx",
@@ -71,6 +71,48 @@ COMPONENTS = [
         "default_ports": {"5432": 5432},
         "default_env": {"POSTGRES_PASSWORD": "changeme", "TZ": "Europe/Moscow"},
         "template_file": "single/postgresql/docker-compose.yml.j2"
+    },
+    {
+        "name": "ClickHouse (РЕД ОС)",
+        "slug": "clickhouse-redos",
+        "category_slug": "data",
+        "image": "clickhouse-server",
+        "image_source": "registry.red-soft.ru",
+        "registry_url": "registry.red-soft.ru/ubi8/clickhouse-server",
+        "is_registry": True,
+        "description": "Высокопроизводительная колоночная СУБД для аналитики, реестр РЕД ОС",
+        "version": "24.3.12.72",
+        "default_ports": {"8123": 8123, "9000": 9000},
+        "default_env": {"TZ": "Europe/Moscow"},
+        "template_file": "single/clickhouse-redos/docker-compose.yml.j2"
+    },
+    {
+        "name": "MariaDB (РЕД ОС)",
+        "slug": "mariadb-redos",
+        "category_slug": "data",
+        "image": "mariadb-server",
+        "image_source": "registry.red-soft.ru",
+        "registry_url": "registry.red-soft.ru/ubi8/mariadb-server",
+        "is_registry": True,
+        "description": "Реляционная СУБД MariaDB с открытым исходным кодом, реестр РЕД ОС",
+        "version": "10.6.20",
+        "default_ports": {"3306": 3306},
+        "default_env": {"MARIADB_ROOT_PASSWORD": "changeme", "TZ": "Europe/Moscow"},
+        "template_file": "single/mariadb-redos/docker-compose.yml.j2"
+    },
+    {
+        "name": "Redis",
+        "slug": "redis",
+        "category_slug": "data",
+        "image": "redis",
+        "image_source": "dh-mirror.gitverse.ru",
+        "registry_url": "dh-mirror.gitverse.ru/redis:7-alpine",
+        "is_registry": False,
+        "description": "Хранилище структур данных в памяти с открытым исходным кодом",
+        "version": "7.2.7",
+        "default_ports": {"6379": 6379},
+        "default_env": {"TZ": "Europe/Moscow"},
+        "template_file": "single/redis/docker-compose.yml.j2"
     },
     # Files
     {
@@ -164,33 +206,63 @@ async def seed():
         await conn.run_sync(Base.metadata.create_all)
 
     async with async_session() as session:
-        # Categories
+        # Use merge to update existing or insert new
+        from sqlalchemy import select
+
+        # Categories — merge by slug
         category_map = {}
         for cat_data in CATEGORIES:
-            cat = Category(**cat_data)
-            session.add(cat)
+            existing = await session.execute(
+                select(Category).where(Category.slug == cat_data["slug"])
+            )
+            cat = existing.scalar_one_or_none()
+            if cat:
+                for key, val in cat_data.items():
+                    setattr(cat, key, val)
+            else:
+                cat = Category(**cat_data)
+                session.add(cat)
             category_map[cat_data["slug"]] = cat
         await session.commit()
 
-        # Components
+        # Components — merge by slug
         component_map = {}
         for comp_data in COMPONENTS:
             cat_slug = comp_data.pop("category_slug")
-            comp = Component(
-                **comp_data,
-                category_id=category_map[cat_slug].id
+            existing = await session.execute(
+                select(Component).where(Component.slug == comp_data["slug"])
             )
-            session.add(comp)
+            comp = existing.scalar_one_or_none()
+            if comp:
+                for key, val in comp_data.items():
+                    setattr(comp, key, val)
+                comp.category_id = category_map[cat_slug].id
+            else:
+                comp = Component(
+                    **comp_data,
+                    category_id=category_map[cat_slug].id
+                )
+                session.add(comp)
             component_map[comp_data["slug"]] = comp
         await session.commit()
 
-        # Stacks
+        # Stacks — merge by slug, replace component relationships
         for stack_data in STACKS:
             comp_slugs = stack_data.pop("component_slugs")
-            stack = Stack(**stack_data)
-            for slug in comp_slugs:
-                stack.components.append(component_map[slug])
-            session.add(stack)
+            existing = await session.execute(
+                select(Stack).where(Stack.slug == stack_data["slug"])
+            )
+            stack = existing.scalar_one_or_none()
+            if stack:
+                for key, val in stack_data.items():
+                    setattr(stack, key, val)
+                # Update component list
+                stack.components = [component_map[slug] for slug in comp_slugs]
+            else:
+                stack = Stack(**stack_data)
+                for slug in comp_slugs:
+                    stack.components.append(component_map[slug])
+                session.add(stack)
         await session.commit()
 
         print(f"Seeded {len(CATEGORIES)} categories, {len(COMPONENTS)} components, {len(STACKS)} stacks")

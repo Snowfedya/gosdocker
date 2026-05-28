@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import type { Component } from '../types'
 import AppIcon from './AppIcon.vue'
@@ -11,8 +11,22 @@ const props = defineProps<{ component: Component }>()
 
 const router = useRouter()
 const showWizard = ref(false)
-const { generateStack } = useApi()
+const { generateStack, constructorGenerate, fetchProfiles } = useApi()
 const downloading = ref(false)
+const selectedProfile = ref('standard')
+const profiles = ref<{ slug: string; label: string; description: string }[]>([])
+const profilesLoaded = ref(false)
+
+// Lazy-load profiles on first interaction
+async function ensureProfiles() {
+  if (profilesLoaded.value) return
+  try {
+    profiles.value = await fetchProfiles()
+  } catch {
+    profiles.value = []
+  }
+  profilesLoaded.value = true
+}
 
 const buildMethodLabels: Record<string, string> = {
   configure_make: './configure && make',
@@ -20,6 +34,7 @@ const buildMethodLabels: Record<string, string> = {
   php_extract: 'PHP extraction',
   node_go: 'Node.js + Go',
   cmake_make: 'cmake + make',
+  make: 'make',
 }
 
 function openDetail() {
@@ -29,19 +44,40 @@ function openDetail() {
 async function quickDownload() {
   downloading.value = true
   try {
-    const blob = await generateStack([props.component.slug], {
-      [props.component.slug]: {
-        ports: { ...props.component.default_ports },
-        volumes: { ...props.component.default_volumes },
-        env: { ...props.component.default_env }
-      }
-    })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${props.component.slug}.zip`
-    a.click()
-    URL.revokeObjectURL(url)
+    // Registry components use constructor with profile; others use legacy generate
+    if (props.component.has_registry) {
+      const blob = await constructorGenerate({
+        components: [props.component.slug],
+        profile: selectedProfile.value,
+        configs: {
+          [props.component.slug]: {
+            ports: { ...props.component.default_ports },
+            volumes: { ...props.component.default_volumes },
+            env: { ...props.component.default_env },
+          },
+        },
+      })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${props.component.slug}-${selectedProfile.value}.zip`
+      a.click()
+      URL.revokeObjectURL(url)
+    } else {
+      const blob = await generateStack([props.component.slug], {
+        [props.component.slug]: {
+          ports: { ...props.component.default_ports },
+          volumes: { ...props.component.default_volumes },
+          env: { ...props.component.default_env },
+        },
+      })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${props.component.slug}.zip`
+      a.click()
+      URL.revokeObjectURL(url)
+    }
   } catch (e) {
     console.error('Download failed', e)
   } finally {
@@ -82,6 +118,8 @@ async function quickDownload() {
             component.build_method === 'go_build' ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/50 dark:text-purple-300' :
             component.build_method === 'php_extract' ? 'bg-orange-100 text-orange-700 dark:bg-orange-900/50 dark:text-orange-300' :
             component.build_method === 'node_go' ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300' :
+            component.build_method === 'cmake_make' ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300' :
+            component.build_method === 'make' ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300' :
             'bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300'"
         >
           <AppIcon name="cube" class="w-3 h-3" />
@@ -89,10 +127,38 @@ async function quickDownload() {
         </span>
       </div>
 
-      <!-- Image URL -->
-      <div class="flex items-center gap-1.5 mb-4 px-2 py-1.5 bg-gray-50 dark:bg-slate-700/50 rounded-lg">
-        <AppIcon name="external-link" class="w-3.5 h-3.5 text-gray-400 shrink-0" />
-        <code class="text-xs text-gray-400 dark:text-slate-500 truncate">{{ component.registry_url }}</code>
+      <!-- Sources -->
+      <div class="mb-4 space-y-1.5">
+        <div class="flex items-center gap-1.5 px-2 py-1.5 bg-gray-50 dark:bg-slate-700/50 rounded-lg">
+          <AppIcon name="external-link" class="w-3.5 h-3.5 text-gray-400 shrink-0" />
+          <span class="text-[10px] font-medium text-gray-400 dark:text-slate-500 uppercase tracking-wider mr-0.5">Образ:</span>
+          <code class="text-xs text-gray-600 dark:text-slate-300 truncate flex-1">{{ component.registry_url }}</code>
+        </div>
+        <div v-if="component.is_registry && component.image_source" class="flex items-center gap-1.5 px-2 py-1.5 bg-emerald-50 dark:bg-emerald-900/20 rounded-lg">
+          <AppIcon name="server" class="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+          <span class="text-[10px] font-medium text-emerald-600 dark:text-emerald-400 uppercase tracking-wider mr-0.5">Реестр РФ:</span>
+          <code class="text-xs text-emerald-700 dark:text-emerald-300 truncate flex-1">{{ component.image_source }}</code>
+        </div>
+      </div>
+
+      <!-- Profile selector (registry only) -->
+      <div v-if="component.has_registry" class="mb-3" @click.stop>
+        <div class="flex items-center gap-2">
+          <span class="text-[10px] font-medium text-gray-400 dark:text-slate-500 uppercase tracking-wider">Профиль:</span>
+          <div class="flex gap-1">
+            <button
+              v-for="p in ['basic', 'standard', 'hardened']"
+              :key="p"
+              @click="selectedProfile = p"
+              class="text-[11px] px-2 py-1 rounded-md font-medium transition"
+              :class="selectedProfile === p
+                ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300 ring-1 ring-primary-300 dark:ring-primary-600'
+                : 'bg-gray-100 dark:bg-slate-700 text-gray-500 dark:text-slate-400 hover:bg-gray-200 dark:hover:bg-slate-600'"
+            >
+              {{ p }}
+            </button>
+          </div>
+        </div>
       </div>
 
       <!-- Actions -->

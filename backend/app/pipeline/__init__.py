@@ -4,8 +4,11 @@ from .build import BuildStep
 from .scan import ScanStep
 from .package import PackageStep
 from .register import RegisterStep
+from .sign import SignStep
+from .owasp import DependencyCheckStep
 
 __all__ = [
     "Pipeline", "Step", "PipelineContext",
     "BuildStep", "ScanStep", "PackageStep", "RegisterStep",
+    "SignStep", "DependencyCheckStep",
 ]

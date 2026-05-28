@@ -1,21 +1,38 @@
-"""Registry API — browse component manifests, download Dockerfiles and artifacts."""
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
+"""Registry API — browse component manifests, build, and fetch security reports."""
+import json
 from pathlib import Path
 
-from app.pipeline import Pipeline, BuildStep, ScanStep, PackageStep, RegisterStep
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import FileResponse
+
+from app.pipeline import (
+    Pipeline, BuildStep, ScanStep, PackageStep, RegisterStep,
+    SignStep, DependencyCheckStep,
+)
 
 router = APIRouter(prefix="/api/registry", tags=["registry"])
 
 REGISTRY_DIR = Path(__file__).parent.parent.parent / "registry"
-REGISTRY_BASE = Path(__file__).parent.parent.parent / "registry"
+REGISTRY_BASE = REGISTRY_DIR
+REPORTS_DIR = Path("/tmp/gosdocker-reports")
+
+# Single pipeline instance — same as constructor
+_PIPELINE = Pipeline([
+    BuildStep(),
+    ScanStep(),
+    DependencyCheckStep(),
+    PackageStep(),
+    SignStep(),
+    RegisterStep(),
+])
 
 
 def _list_registry_components() -> list[str]:
     """Scan registry directory for component slugs."""
     if not REGISTRY_BASE.exists():
         return []
-    return sorted(d.name for d in REGISTRY_BASE.iterdir() if d.is_dir() and (d / "manifest.yml").exists())
+    return sorted(d.name for d in REGISTRY_BASE.iterdir()
+                  if d.is_dir() and (d / "manifest.yml").exists())
 
 
 def _load_manifest(slug: str) -> dict | None:
@@ -25,6 +42,148 @@ def _load_manifest(slug: str) -> dict | None:
     if not manifest_path.exists():
         return None
     return yaml.safe_load(manifest_path.read_text())
+
+
+def _parse_sbom_summary(sbom_path: Path) -> dict:
+    """Extract a summary from CycloneDX SBOM."""
+    try:
+        data = json.loads(sbom_path.read_text())
+        components = data.get("components", [])
+        # Count by type
+        type_counts: dict[str, int] = {}
+        top_deps: list[dict] = []
+        for c in components:
+            t = c.get("type", "unknown")
+            type_counts[t] = type_counts.get(t, 0) + 1
+            name = c.get("name", "?")
+            ver = c.get("version", "")
+            if len(top_deps) < 30:
+                top_deps.append({"name": name, "version": ver, "type": t})
+        tool_names = [t.get("name", "?") for t in data.get("metadata", {}).get("tools", [])]
+        return {
+            "total_components": len(components),
+            "by_type": type_counts,
+            "top_dependencies": top_deps,
+            "tools": tool_names,
+            "bom_format": data.get("bomFormat", ""),
+            "spec_version": data.get("specVersion", ""),
+        }
+    except Exception as e:
+        return {"error": str(e), "total_components": 0, "by_type": {}, "top_dependencies": [], "tools": []}
+
+
+def _parse_trivy_summary(trivy_path: Path) -> dict:
+    """Extract vulnerability summary from Trivy JSON report."""
+    try:
+        data = json.loads(trivy_path.read_text())
+        results = data.get("results", [])
+        total_vulns = 0
+        severity_counts: dict[str, int] = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "UNKNOWN": 0}
+        vuln_list: list[dict] = []
+        for result in results:
+            vulns = result.get("vulnerabilities", [])
+            for v in vulns:
+                sev = v.get("Severity", "UNKNOWN").upper()
+                if sev in severity_counts:
+                    severity_counts[sev] += 1
+                total_vulns += 1
+                if len(vuln_list) < 50:
+                    vuln_list.append({
+                        "id": v.get("VulnerabilityID", ""),
+                        "pkg": v.get("PkgName", ""),
+                        "severity": sev,
+                        "title": v.get("Title", "")[:80],
+                        "fixed": v.get("FixedVersion", ""),
+                    })
+        return {
+            "total_vulnerabilities": total_vulns,
+            "by_severity": severity_counts,
+            "vulnerabilities": vuln_list,
+        }
+    except Exception as e:
+        return {"error": str(e), "total_vulnerabilities": 0, "by_severity": {}, "vulnerabilities": []}
+
+
+def _parse_owasp_summary(owasp_path: Path) -> dict:
+    """Extract summary from OWASP Dependency-Check report."""
+    try:
+        data = json.loads(owasp_path.read_text())
+        dependencies = data.get("dependencies", [])
+        total_deps = len(dependencies)
+        vuln_count = 0
+        sev_counts: dict[str, int] = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+        for dep in dependencies:
+            for v in dep.get("vulnerabilities", []):
+                vuln_count += 1
+                sev = v.get("severity", "LOW").upper()
+                if sev in sev_counts:
+                    sev_counts[sev] += 1
+        return {
+            "total_dependencies": total_deps,
+            "total_vulnerabilities": vuln_count,
+            "by_severity": sev_counts,
+        }
+    except Exception as e:
+        return {"error": str(e), "total_dependencies": 0, "total_vulnerabilities": 0}
+
+
+def _build_report_from_context(slug: str, profile: str, artifacts: dict, errors: list) -> dict:
+    """Build a structured security report from pipeline artifacts."""
+    report: dict = {
+        "slug": slug,
+        "profile": profile,
+        "status": "ok" if not errors else "error",
+        "errors": errors,
+        "sbom": None,
+        "trivy": None,
+        "owasp": None,
+        "cosign": {"signed": False, "public_key": None, "signature": None},
+    }
+
+    for art_key, art_path_str in artifacts.items():
+        if not art_path_str:
+            continue
+        art_path = Path(art_path_str)
+        if not art_path.exists():
+            continue
+
+        if art_key == "sbom":
+            summary = _parse_sbom_summary(art_path)
+            report["sbom"] = summary
+        elif art_key == "trivy_report":
+            summary = _parse_trivy_summary(art_path)
+            report["trivy"] = summary
+        elif art_key == "owasp_report":
+            summary = _parse_owasp_summary(art_path)
+            report["owasp"] = summary
+        elif art_key == "cosign_sig":
+            report["cosign"]["signature"] = str(art_path)
+            report["cosign"]["signed"] = True
+        elif art_key == "cosign_pub":
+            report["cosign"]["public_key"] = str(art_path)
+
+    return report
+
+
+def _save_report_cache(slug: str, report: dict):
+    """Cache the latest report to disk for later retrieval."""
+    cache_dir = REPORTS_DIR / slug
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "latest.json").write_text(json.dumps(report, indent=2, default=str))
+
+
+def _load_report_cache(slug: str) -> dict | None:
+    """Load cached report, or None if not found."""
+    cache_file = REPORTS_DIR / slug / "latest.json"
+    if not cache_file.exists():
+        return None
+    try:
+        return json.loads(cache_file.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+# ── API Routes ───────────────────────────────────────────────────────
 
 
 @router.get("")
@@ -85,21 +244,47 @@ async def get_manifest_raw(slug: str):
     )
 
 
-@router.get("/{slug}/build")
-async def run_pipeline(slug: str, profile: str = "standard"):
-    """Run the pipeline for a component and return its build context."""
+@router.post("/{slug}/build")
+async def run_pipeline(slug: str, profile: str = Query("standard", description="Security profile: basic, standard, or hardened")):
+    """Run the security pipeline for a component and return report.
+
+    Builds the Docker image, scans with Trivy, runs OWASP Dependency-Check,
+    packages, signs with Cosign. Returns a structured security report.
+    """
     manifest = _load_manifest(slug)
     if not manifest:
-        raise HTTPException(status_code=404, detail=f"Component '{slug}' not found")
+        raise HTTPException(status_code=404, detail=f"Component '{slug}' not found in registry")
 
-    pipeline = Pipeline([BuildStep(), ScanStep(), PackageStep(), RegisterStep()])
-    ctx = pipeline.run(manifest, profile=profile)
+    from concurrent.futures import ThreadPoolExecutor
+    import asyncio
 
-    return {
-        "slug": slug,
-        "profile": profile,
-        "status": "ok" if not ctx.errors else "error",
-        "errors": ctx.errors,
-        "artifacts": {k: v for k, v in ctx.artifacts.items() if v is not None},
-        "logs": ctx.logs[-5:],  # last 5 log entries
-    }
+    loop = asyncio.get_running_loop()
+    executor = ThreadPoolExecutor(max_workers=2)
+
+    def _run():
+        work_dir = Path("/tmp/gosdocker-constructor") / slug
+        return _PIPELINE.run(manifest, profile=profile, work_dir=work_dir)
+
+    try:
+        ctx = await loop.run_in_executor(executor, _run)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Pipeline failed: {e}")
+
+    report = _build_report_from_context(slug, profile, ctx.artifacts, ctx.errors)
+    _save_report_cache(slug, report)
+    return report
+
+
+@router.get("/{slug}/reports")
+async def get_reports(slug: str):
+    """Fetch the latest cached security report for a component.
+
+    Returns 404 if no build has been run yet.
+    """
+    report = _load_report_cache(slug)
+    if report is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No security report found for '{slug}'. Run POST /api/registry/{slug}/build first.",
+        )
+    return report

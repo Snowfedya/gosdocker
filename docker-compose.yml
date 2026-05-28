@@ -5,8 +5,12 @@ services:
       - "8000:8000"
     environment:
       - DATABASE_URL=postgresql+asyncpg://gosdocker:secret@db:5432/gosdocker
+      - COSIGN_PASSWORD=
     volumes:
       - ./backend/registry:/app/registry:ro
+      - /var/run/docker.sock:/var/run/docker.sock:rw
+      - syft_cache:/root/.syft
+      - trivy_cache:/root/.cache/trivy
     depends_on:
       db:
         condition: service_healthy
@@ -50,6 +54,8 @@ services:
 
 volumes:
   pgdata:
+  syft_cache:
+  trivy_cache:
 
 networks:
   gosdocker:

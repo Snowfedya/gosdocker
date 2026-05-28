@@ -54,6 +54,11 @@ defineProps<{ name: string; class?: string }>()
       <path d="M5 13l4 4L19 7" />
     </template>
 
+    <!-- Check Circle / Verified -->
+    <template v-else-if="name === 'check-circle'">
+      <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+    </template>
+
     <!-- Close / X -->
     <template v-else-if="name === 'close'">
       <path d="M6 18L18 6M6 6l12 12" />

@@ -198,15 +198,16 @@ const categoryLabels: Record<string, string> = {
             <button
               @click="runDiagnostic"
               :disabled="selectedCount === 0"
+              title="Проверить совместимость и разрешить зависимости выбранных компонентов"
               class="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-white dark:bg-slate-700 border-2 border-gray-200 dark:border-slate-600 text-gray-700 dark:text-slate-300 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-slate-600 disabled:opacity-40 transition"
             >
-              <AppIcon name="check" class="w-4 h-4" />
+              <AppIcon name="check-circle" class="w-4 h-4" />
               Проверить
             </button>
             <button
               @click="generate"
               :disabled="selectedCount === 0 || generating"
-              class="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 disabled:opacity-40 transition shadow-sm"
+              class="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 disabled:opacity-40 transition shadow-md ring-1 ring-primary-500/30"
             >
               <AppIcon :name="generating ? 'refresh' : 'download'" class="w-4 h-4" :class="generating ? 'animate-spin' : ''" />
               {{ generating ? 'Генерация...' : 'Сгенерировать и скачать' }}
@@ -215,10 +216,13 @@ const categoryLabels: Record<string, string> = {
 
           <!-- Diagnostic result -->
           <div v-if="showResult && result" class="mt-6 pt-6 border-t border-gray-200 dark:border-slate-700">
-            <div class="flex items-center gap-2 mb-4">
-              <AppIcon name="check" class="w-4 h-4 text-green-500" />
+            <div class="flex items-center gap-2 mb-1">
+              <AppIcon name="check-circle" class="w-4 h-4 text-green-500" />
               <h3 class="font-medium text-gray-900 dark:text-white text-sm">Результат проверки</h3>
             </div>
+            <p class="text-xs text-gray-500 dark:text-slate-400 mb-4">
+              Показывает, какие компоненты будут включены в итоговый стек с учётом автоматического разрешения зависимостей
+            </p>
 
             <div class="mb-3">
               <div class="text-xs text-gray-500 dark:text-slate-400 mb-2">Разрешённые компоненты:</div>

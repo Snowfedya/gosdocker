@@ -7,6 +7,7 @@ import type {
   ConstructorRequest,
   ConstructorDiagnostic,
   SecurityProfile,
+  SecurityReport,
 } from '../types'
 
 const API_BASE = '/api'
@@ -105,6 +106,22 @@ export function useApi() {
     return res.json()
   }
 
+  // --- Registry Build + Reports API ---
+
+  async function buildComponent(slug: string, profile: string = 'standard'): Promise<SecurityReport> {
+    const res = await fetch(`${API_BASE}/registry/${slug}/build?profile=${encodeURIComponent(profile)}`, {
+      method: 'POST',
+    })
+    if (!res.ok) throw new Error('Ошибка запуска проверки безопасности')
+    return res.json()
+  }
+
+  async function fetchReports(slug: string): Promise<SecurityReport> {
+    const res = await fetch(`${API_BASE}/registry/${slug}/reports`)
+    if (!res.ok) throw new Error('Отчёт не найден — сначала запустите проверку')
+    return res.json()
+  }
+
   return {
     fetchCategories,
     fetchComponents,
@@ -117,5 +134,7 @@ export function useApi() {
     constructorDiagnostic,
     constructorGenerate,
     fetchProfiles,
+    buildComponent,
+    fetchReports,
   }
 }

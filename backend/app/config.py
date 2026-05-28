@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     debug: bool = False
     templates_dir: str = "app/templates"
 
-    model_config = SettingsConfigDict(env_file=".env")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
 settings = Settings()

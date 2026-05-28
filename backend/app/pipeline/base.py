@@ -1,5 +1,3 @@
-"""Pipeline base classes — Step, Pipeline, PipelineContext."""
-from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +17,10 @@ class PipelineContext:
             "dockerfile": None,
             "sbom": None,
             "trivy_report": None,
+            "cosign_pub": None,
+            "cosign_sig": None,
+            "cosign_key": None,
+            "owasp_report": None,
             "image_tar": None,
             "deploy_script": None,
         }

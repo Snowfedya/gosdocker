@@ -7,7 +7,7 @@ component:
   source_url: "https://github.com/ClickHouse/ClickHouse/archive/refs/tags/v24.3.12.72-lts.tar.gz"
   community_url: "https://github.com/ClickHouse/ClickHouse"
   documentation_url: "https://clickhouse.com/docs"
-  build_method: cmake
+  build_method: cmake_make
   build_args:
     VERSION: "24.3.12.72"
     CMAKE_FLAGS: "-DCMAKE_BUILD_TYPE=Release -DENABLE_TESTS=OFF -DENABLE_UTILS=OFF"

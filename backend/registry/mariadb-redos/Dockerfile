@@ -24,7 +24,7 @@ RUN cmake .. ${CMAKE_FLAGS} && \
 FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libncurses6 libssl3 libxml2 libcurl4 libfmt9 libpcre3 libkrb5-3 \
+    libncurses6 libssl3 libxml2 libcurl4 libfmt10 libpcre3 libkrb5-3 \
     ca-certificates tzdata && \
     rm -rf /var/lib/apt/lists/* && \
     groupadd -r mysql && useradd -r -g mysql mysql && \

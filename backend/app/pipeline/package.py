@@ -6,7 +6,7 @@ from .base import Step, PipelineContext
 
 
 _DEPLOY_SH = """#!/bin/sh
-# GosDocker Deployment Script — Air-Gapped Mode
+# GosDocker Deployment Script — Air-Gapped Mode with Security Verification
 # Component: {name} ({slug})
 # Generated: {timestamp}
 set -e
@@ -21,8 +21,24 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 IMAGE_TAR="{slug}.tar"
+SEC_DIR="security/{slug}"
+
 if [ -f "$IMAGE_TAR" ]; then
-    echo "[1/3] Loading Docker image..."
+    echo "[1/3] Verifying image signature..."
+    COSIGN_PUB="$SEC_DIR/{slug}-cosign.pub"
+    COSIGN_SIG="$SEC_DIR/{slug}-cosign.sig"
+    if [ -f "$COSIGN_PUB" ] && [ -f "$COSIGN_SIG" ]; then
+        if command -v cosign >/dev/null 2>&1; then
+            cosign verify-blob --key "$COSIGN_PUB" --signature "$COSIGN_SIG" "$IMAGE_TAR" && \\
+                echo "  ✓ Signature verified" || \\
+                echo "  ⚠ Signature verification FAILED — image may be tampered with!"
+        else
+            echo "  ⚠ cosign not found — install from https://sigstore.dev to verify"
+        fi
+    else
+        echo "  - No signature found for verification"
+    fi
+    echo "Loading Docker image..."
     docker load -i "$IMAGE_TAR"
     echo "  Image loaded."
 else

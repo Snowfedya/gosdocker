@@ -7,7 +7,7 @@ component:
   source_url: "https://github.com/MariaDB/server/archive/refs/tags/mariadb-10.6.20.tar.gz"
   community_url: "https://github.com/MariaDB/server"
   documentation_url: "https://mariadb.com/docs"
-  build_method: cmake
+  build_method: cmake_make
   build_args:
     VERSION: "10.6.20"
     CMAKE_FLAGS: "-DCMAKE_BUILD_TYPE=Release -DWITH_UNIT_TESTS=OFF -DWITHOUT_MROONGA=1 -DWITHOUT_TOKUDB=1"

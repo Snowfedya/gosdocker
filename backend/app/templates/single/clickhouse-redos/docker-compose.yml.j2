@@ -1,0 +1,27 @@
+clickhouse-redos:
+    image: {{ registry_url or 'registry.red-soft.ru/ubi8/clickhouse-server' }}
+    container_name: clickhouse-redos
+    restart: unless-stopped
+{% if config.get('ports') %}
+    ports:
+{% for ext, intv in config['ports'].items() %}
+      - "{{ ext }}:{{ intv }}"
+{% endfor %}
+{% endif %}
+    environment:
+      TZ: "{{ config.get('env', {}).get('TZ', 'Europe/Moscow') }}"
+{% if config.get('volumes') %}
+    volumes:
+{% for host, container in config['volumes'].items() %}
+      - {{ host }}:{{ container }}
+{% endfor %}
+{% else %}
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+{% endif %}
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    networks:
+      - gosdocker

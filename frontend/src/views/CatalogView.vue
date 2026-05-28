@@ -24,6 +24,7 @@ const buildMethodLabels: Record<string, string> = {
   php_extract: 'PHP extraction',
   node_go: 'Node.js + Go',
   cmake_make: 'cmake + make',
+  make: 'make',
 }
 
 async function loadData() {
@@ -32,7 +33,7 @@ async function loadData() {
   try {
     const [cats, comps] = await Promise.all([
       fetchCategories(),
-      fetchComponents(selectedCategory.value || undefined),
+      fetchComponents(selectedCategory.value || undefined, registryOnly.value || undefined),
     ])
     categories.value = cats
     components.value = comps
@@ -73,7 +74,7 @@ function toggleRegistry() {
 const filteredComponents = computed(() => {
   let result = components.value
   if (registryOnly.value) {
-    result = result.filter(c => c.has_registry)
+    result = result.filter(c => c.is_registry)
   }
   if (!searchQuery.value) return result
   const q = searchQuery.value.toLowerCase().trim()

@@ -1,0 +1,24 @@
+mariadb-redos:
+    image: {{ registry_url or 'registry.red-soft.ru/ubi8/mariadb-server' }}
+    container_name: mariadb-redos
+    restart: unless-stopped
+{% if config.get('ports') %}
+    ports:
+{% for ext, intv in config['ports'].items() %}
+      - "{{ ext }}:{{ intv }}"
+{% endfor %}
+{% endif %}
+    environment:
+      MARIADB_ROOT_PASSWORD: {{ config.get('env', {}).get('MARIADB_ROOT_PASSWORD', 'changeme') }}
+      TZ: "{{ config.get('env', {}).get('TZ', 'Europe/Moscow') }}"
+{% if config.get('volumes') %}
+    volumes:
+{% for host, container in config['volumes'].items() %}
+      - {{ host }}:{{ container }}
+{% endfor %}
+{% else %}
+    volumes:
+      - mariadb-data:/var/lib/mysql
+{% endif %}
+    networks:
+      - gosdocker

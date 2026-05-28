@@ -108,3 +108,51 @@ export interface SecurityProfile {
   label: string
   description: string
 }
+
+// --- Security report types ---
+
+export interface Vulnerability {
+  id: string
+  pkg: string
+  severity: string
+  title: string
+  fixed: string
+}
+
+export interface TrivyReport {
+  total_vulnerabilities: number
+  by_severity: { CRITICAL: number; HIGH: number; MEDIUM: number; LOW: number; UNKNOWN: number }
+  vulnerabilities: Vulnerability[]
+}
+
+export interface SbomDependency {
+  name: string
+  version: string
+  type: string
+}
+
+export interface SbomReport {
+  total_components: number
+  by_type: Record<string, number>
+  top_dependencies: SbomDependency[]
+  tools: string[]
+  bom_format: string
+  spec_version: string
+}
+
+export interface CosignStatus {
+  signed: boolean
+  public_key: string | null
+  signature: string | null
+}
+
+export interface SecurityReport {
+  slug: string
+  profile: string
+  status: 'ok' | 'error'
+  errors: string[]
+  sbom: SbomReport | null
+  trivy: TrivyReport | null
+  owasp: Record<string, unknown> | null
+  cosign: CosignStatus
+}

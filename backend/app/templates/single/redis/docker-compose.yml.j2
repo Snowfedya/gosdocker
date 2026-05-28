@@ -1,0 +1,27 @@
+redis:
+    image: {{ registry_url or 'dh-mirror.gitverse.ru/redis:7-alpine' }}
+    container_name: redis
+    restart: unless-stopped
+{% if config.get('ports') %}
+    ports:
+{% for ext, intv in config['ports'].items() %}
+      - "{{ ext }}:{{ intv }}"
+{% endfor %}
+{% endif %}
+{% if config.get('env') %}
+    environment:
+{% for key, value in config['env'].items() %}
+      {{ key }}: "{{ value }}"
+{% endfor %}
+{% endif %}
+{% if config.get('volumes') %}
+    volumes:
+{% for host, container in config['volumes'].items() %}
+      - {{ host }}:{{ container }}
+{% endfor %}
+{% else %}
+    volumes:
+      - redis-data:/data
+{% endif %}
+    networks:
+      - gosdocker
