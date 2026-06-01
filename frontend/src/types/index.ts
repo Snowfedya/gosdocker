@@ -77,6 +77,7 @@ export interface RegistryManifest {
     description: string
     source_url: string
     documentation_url: string
+    community_url: string | null
     build_method: string
     build_args: Record<string, string>
     dependencies: {

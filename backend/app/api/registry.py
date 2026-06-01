@@ -59,7 +59,16 @@ def _parse_sbom_summary(sbom_path: Path) -> dict:
             ver = c.get("version", "")
             if len(top_deps) < 30:
                 top_deps.append({"name": name, "version": ver, "type": t})
-        tool_names = [t.get("name", "?") for t in data.get("metadata", {}).get("tools", [])]
+        tool_names = []
+        tools_raw = data.get("metadata", {}).get("tools", {})
+        if isinstance(tools_raw, dict):
+            for tool in tools_raw.get("components", []):
+                if isinstance(tool, dict):
+                    tool_names.append(tool.get("name", "?"))
+        elif isinstance(tools_raw, list):
+            for tool in tools_raw:
+                if isinstance(tool, dict):
+                    tool_names.append(tool.get("name", "?"))
         return {
             "total_components": len(components),
             "by_type": type_counts,

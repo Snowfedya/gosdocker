@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 import { createRouter, createWebHistory } from 'vue-router'
 import HomeView from '../views/HomeView.vue'
 
@@ -32,6 +33,12 @@ const router = createRouter({
       path: '/constructor',
       name: 'constructor',
       component: () => import('../views/ConstructorView.vue'),
+    },
+    {
+      path: '/components/:slug/security',
+      name: 'security-report',
+      component: () => import('../views/SecurityReportView.vue'),
+      meta: { title: 'Отчёт безопасности' },
     },
     {
       path: '/:pathMatch(.*)*',

@@ -18,15 +18,6 @@ const loading = ref(true)
 const error = ref<string | null>(null)
 const registryOnly = ref(false)
 
-const buildMethodLabels: Record<string, string> = {
-  configure_make: './configure && make',
-  go_build: 'Go build',
-  php_extract: 'PHP extraction',
-  node_go: 'Node.js + Go',
-  cmake_make: 'cmake + make',
-  make: 'make',
-}
-
 async function loadData() {
   loading.value = true
   error.value = null

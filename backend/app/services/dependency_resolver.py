@@ -5,12 +5,12 @@ This module resolves the dependency graph and auto-adds missing providers.
 
 Graph (from manifests):
   nextcloud requires: [database]       → provided by: postgresql, postgresql-redos
-  grafana   requires: [monitoring]     → provided by: prometheus
+  grafana   requires: [monitoring, database] → provided by: prometheus, postgresql
 """
 
 DEPENDENCY_GRAPH: dict[str, set[str]] = {
     "nextcloud": {"database"},
-    "grafana": {"monitoring"},
+    "grafana": {"monitoring", "database"},
     "postgresql": set(),
     "postgresql-redos": set(),
     "nginx": set(),

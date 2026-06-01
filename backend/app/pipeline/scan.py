@@ -76,9 +76,24 @@ def _generate_sbom_via_syft(source_dir: str, slug: str) -> dict | None:
 
 
 def _run_trivy_image(slug: str, work_dir: Path) -> str | None:
-    """Run Trivy on the built Docker image, return report path or None."""
+    """Run Trivy on the built Docker image, return report path or None.
+
+    First checks if the Docker image exists — if not, returns None immediately
+    instead of hanging for 320 seconds on a pull attempt.
+    """
     trivy_path = shutil.which("trivy")
     if not trivy_path:
+        return None
+
+    # Check if the Docker image actually exists before trying to scan it
+    try:
+        img_check = subprocess.run(
+            ["docker", "images", "-q", f"gosdocker/{slug}:latest"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if not img_check.stdout.strip():
+            return None  # Image doesn't exist — skip trivy image scan
+    except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
 
     trivy_out = work_dir / f"{slug}-trivy.json"

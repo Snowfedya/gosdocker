@@ -39,7 +39,7 @@ function isActive(path: string): boolean {
             </div>
             <div class="hidden sm:block">
               <span class="text-lg font-bold text-gray-900 dark:text-white">GosDocker</span>
-              <span class="block text-[10px] leading-tight text-gray-400 dark:text-slate-500 -mt-0.5">Реестр ИТ-компонентов</span>
+              <span class="block text-[10px] leading-tight text-gray-400 dark:text-slate-500 -mt-0.5">Каталог ИТ-компонентов</span>
             </div>
           </RouterLink>
 

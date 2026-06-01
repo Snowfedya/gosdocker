@@ -8,6 +8,7 @@ Requires:
   - cosign binary installed and in PATH
   - (optional) Docker image tar for sign-blob
 """
+import os
 import subprocess
 import shutil
 from pathlib import Path
@@ -34,9 +35,10 @@ class SignStep(Step):
         work_dir = ctx.work_dir
         work_dir.mkdir(parents=True, exist_ok=True)
 
-        key_path = work_dir / f"{slug}-cosign.key"
-        pub_path = work_dir / f"{slug}-cosign.pub"
-        env = {"COSIGN_PASSWORD": ""}  # empty passphrase for CI/build automation
+        key_path = work_dir / f"{slug}.key"
+        pub_path = work_dir / f"{slug}.pub"
+        # Set empty passphrase for CI/build automation, inherit full env
+        env = {**os.environ, "COSIGN_PASSWORD": ""}
 
         # 1. Generate key pair if not exists
         if not key_path.exists():

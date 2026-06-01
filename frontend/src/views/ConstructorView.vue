@@ -24,7 +24,7 @@ onMounted(async () => {
     registry.value = reg
     profiles.value = profs
   } catch (e) {
-    error.value = 'Ошибка загрузки'
+    error.value = `Ошибка загрузки: ${(e as Error).message}`
   } finally {
     loading.value = false
   }
@@ -53,7 +53,7 @@ async function runDiagnostic() {
     })
     showResult.value = true
   } catch (e) {
-    error.value = 'Ошибка диагностики'
+    error.value = `Ошибка диагностики: ${(e as Error).message}`
   }
 }
 
@@ -80,7 +80,7 @@ async function generate() {
     a.click()
     URL.revokeObjectURL(url)
   } catch (e) {
-    error.value = 'Ошибка генерации'
+    error.value = `Ошибка генерации: ${(e as Error).message}`
   } finally {
     generating.value = false
   }
@@ -253,6 +253,26 @@ const categoryLabels: Record<string, string> = {
 
             <div v-if="result.errors.length" class="text-xs bg-red-50 dark:bg-red-900/10 border border-red-100 dark:border-red-800/30 p-3 rounded-lg">
               <p class="font-medium text-red-600 dark:text-red-400">{{ result.errors.join(', ') }}</p>
+            </div>
+
+            <!-- Security summary per component -->
+            <div v-if="showResult && result?.resolved.length" class="mt-6 pt-6 border-t border-gray-200 dark:border-slate-700">
+              <div class="flex items-center gap-2 mb-3">
+                <AppIcon name="shield" class="w-4 h-4 text-gray-500 dark:text-slate-400" />
+                <h3 class="font-medium text-gray-900 dark:text-white text-sm">Безопасность компонентов</h3>
+              </div>
+              <div class="space-y-1.5">
+                <div v-for="slug in result.resolved" :key="slug"
+                  class="flex items-center justify-between px-2.5 py-1.5 bg-gray-50 dark:bg-slate-700/30 rounded-lg">
+                  <span class="text-xs font-mono text-gray-700 dark:text-slate-300">{{ slug }}</span>
+                  <router-link
+                    :to="`/components/${slug}/security`"
+                    class="text-xs text-primary-600 dark:text-primary-400 hover:underline"
+                  >
+                    → отчёт
+                  </router-link>
+                </div>
+              </div>
             </div>
           </div>
         </div>
