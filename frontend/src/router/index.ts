@@ -26,6 +26,12 @@ const router = createRouter({
       component: () => import('../views/StacksView.vue'),
     },
     {
+      path: '/stacks/:slug',
+      name: 'stack-detail',
+      component: () => import('../views/StackDetailView.vue'),
+      meta: { title: 'Сборка' },
+    },
+    {
       path: '/registry',
       redirect: '/catalog',
     },

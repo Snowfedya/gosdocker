@@ -1,5 +1,6 @@
 """Registry API — browse component manifests, build, and fetch security reports."""
 import json
+import re
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
@@ -20,11 +21,22 @@ REPORTS_DIR = Path("/tmp/gosdocker-reports")
 _PIPELINE = Pipeline([
     BuildStep(),
     ScanStep(),
-    DependencyCheckStep(),
     PackageStep(),
     SignStep(),
     RegisterStep(),
+    DependencyCheckStep(),  # runs last — can timeout without blocking the critical path
 ])
+
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,60}[a-z0-9]$")
+
+def _validate_slug(slug: str) -> str:
+    """Validate component slug against safe pattern to prevent path traversal."""
+    if not _SLUG_RE.match(slug):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid slug '{slug}'. Must match [a-z0-9][a-z0-9-]{{0,60}}[a-z0-9]",
+        )
+    return slug
 
 
 def _list_registry_components() -> list[str]:
@@ -220,6 +232,7 @@ async def list_registry():
 
 @router.get("/{slug}")
 async def get_registry_component(slug: str):
+    _validate_slug(slug)
     """Get full component manifest."""
     manifest = _load_manifest(slug)
     if not manifest:
@@ -229,6 +242,7 @@ async def get_registry_component(slug: str):
 
 @router.get("/{slug}/dockerfile")
 async def get_dockerfile(slug: str):
+    _validate_slug(slug)
     """Download the Dockerfile for a component."""
     dockerfile_path = REGISTRY_BASE / slug / "Dockerfile"
     if not dockerfile_path.exists():
@@ -242,6 +256,7 @@ async def get_dockerfile(slug: str):
 
 @router.get("/{slug}/manifest")
 async def get_manifest_raw(slug: str):
+    _validate_slug(slug)
     """Get raw manifest.yml content as text."""
     manifest_path = REGISTRY_BASE / slug / "manifest.yml"
     if not manifest_path.exists():
@@ -255,6 +270,7 @@ async def get_manifest_raw(slug: str):
 
 @router.post("/{slug}/build")
 async def run_pipeline(slug: str, profile: str = Query("standard", description="Security profile: basic, standard, or hardened")):
+    _validate_slug(slug)
     """Run the security pipeline for a component and return report.
 
     Builds the Docker image, scans with Trivy, runs OWASP Dependency-Check,
@@ -286,6 +302,7 @@ async def run_pipeline(slug: str, profile: str = Query("standard", description="
 
 @router.get("/{slug}/reports")
 async def get_reports(slug: str):
+    _validate_slug(slug)
     """Fetch the latest cached security report for a component.
 
     Returns 404 if no build has been run yet.

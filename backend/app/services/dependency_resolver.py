@@ -16,11 +16,18 @@ DEPENDENCY_GRAPH: dict[str, set[str]] = {
     "nginx": set(),
     "angie-pro": set(),
     "prometheus": set(),
+    "clickhouse-redos": set(),
+    "mariadb-redos": set(),
+    "redis": set(),
 }
 
 DEPENDENCY_PROVIDERS: dict[str, set[str]] = {
-    "database": {"postgresql", "postgresql-redos"},
+    "database": {"postgresql", "postgresql-redos", "mariadb-redos"},
     "monitoring": {"prometheus"},
+    "analytics-database": {"clickhouse-redos"},
+    "columnar-db": {"clickhouse-redos"},
+    "cache": {"redis"},
+    "key-value-store": {"redis"},
 }
 
 # Preferred provider when multiple options exist (first is default)

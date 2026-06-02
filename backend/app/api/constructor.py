@@ -7,6 +7,7 @@ runs pipeline, returns ZIP with compose + build artifacts + security reports.
 import asyncio
 import io
 import json
+import re
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -32,6 +33,19 @@ REGISTRY_BASE = Path(__file__).parent.parent.parent / "registry"
 resolver = DependencyResolver()
 
 _executor = ThreadPoolExecutor(max_workers=2)
+
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,60}[a-z0-9]$")
+
+def _validate_slug(slug: str, context: str = "") -> str:
+    """Validate component slug against safe pattern to prevent path traversal."""
+    if not _SLUG_RE.match(slug):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid slug '{slug}'{context}. "
+                   f"Must match [a-z0-9][a-z0-9-]{{0,60}}[a-z0-9]",
+        )
+    return slug
+
 
 # Pipeline instance used for each component build
 _SECURITY_PIPELINE = Pipeline([
@@ -205,6 +219,8 @@ cosign verify-blob --key security/<slug>/<slug>-cosign.pub \\
 @router.post("/diagnostic")
 async def constructor_diagnostic(body: ConstructorRequest):
     """Resolve dependencies and return what would be generated (no ZIP)."""
+    for slug in body.components:
+        _validate_slug(slug, " in components list")
     resolved, auto_added = resolver.resolve_with_metadata(body.components)
 
     errors = []
@@ -228,6 +244,10 @@ async def constructor_generate(body: ConstructorRequest):
     For each component runs the security pipeline (SBOM, Trivy, OWASP DC,
     image packaging, Cosign signing). All artifacts bundled into ZIP.
     """
+    # Validate all slugs
+    for slug in body.components:
+        _validate_slug(slug, " in components list")
+
     # 1. Resolve dependencies
     resolved, auto_added = resolver.resolve_with_metadata(body.components)
 

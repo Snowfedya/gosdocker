@@ -52,7 +52,14 @@ onMounted(async () => {
       </router-link>
     </div>
     <div v-else class="grid grid-cols-1 md:grid-cols-2 gap-6">
-      <StackCard v-for="stack in stacks" :key="stack.slug" :stack="stack" />
+      <router-link
+        v-for="stack in stacks"
+        :key="stack.slug"
+        :to="`/stacks/${stack.slug}`"
+        class="block no-underline"
+      >
+        <StackCard :stack="stack" />
+      </router-link>
     </div>
   </div>
 </template>

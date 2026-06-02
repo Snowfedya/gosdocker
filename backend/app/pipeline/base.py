@@ -1,8 +1,11 @@
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from abc import ABC, abstractmethod
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -30,6 +33,7 @@ class PipelineContext:
 
     def log(self, msg: str) -> None:
         self.logs.append(msg)
+        logger.info("%s: %s", self.slug, msg)
 
     def error(self, msg: str) -> None:
         self.errors.append(msg)

@@ -9,12 +9,13 @@ const props = defineProps<{ stack: Stack }>()
 
 const { generateStack } = useApi()
 const downloading = ref(false)
+const selectedProfile = ref<string>('standard')
 
 async function downloadStack() {
   downloading.value = true
   try {
     const slugs = props.stack.components.map(c => c.slug)
-    const blob = await generateStack(slugs, {})
+    const blob = await generateStack(slugs, {}, selectedProfile.value)
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
@@ -64,6 +65,20 @@ function isRegistryStack(): boolean {
           {{ comp.name }}
           <SourceBadge :is-registry="comp.is_registry" />
         </span>
+      </div>
+
+      <!-- Profile selector -->
+      <div class="flex items-center gap-2 mb-3">
+        <label class="text-xs text-gray-500 dark:text-slate-400">Профиль:</label>
+        <select
+          v-model="selectedProfile"
+          class="flex-1 px-2.5 py-1.5 bg-gray-50 dark:bg-slate-700 border border-gray-200 dark:border-slate-600 rounded-lg text-xs text-gray-700 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-primary-500"
+          @click.stop
+        >
+          <option value="basic">Базовый</option>
+          <option value="standard">Стандартный</option>
+          <option value="hardened">Усиленный</option>
+        </select>
       </div>
 
       <button

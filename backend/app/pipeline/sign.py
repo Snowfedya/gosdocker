@@ -37,8 +37,10 @@ class SignStep(Step):
 
         key_path = work_dir / f"{slug}.key"
         pub_path = work_dir / f"{slug}.pub"
-        # Set empty passphrase for CI/build automation, inherit full env
-        env = {**os.environ, "COSIGN_PASSWORD": ""}
+        # Read Cosign password from environment or generate a random one for CI
+        # IMPORTANT: For production government use, always set COSIGN_PASSWORD=<strong-password>
+        cosign_password = os.environ.get("COSIGN_PASSWORD", os.urandom(32).hex())
+        env = {**os.environ, "COSIGN_PASSWORD": cosign_password}
 
         # 1. Generate key pair if not exists
         if not key_path.exists():
@@ -69,7 +71,7 @@ class SignStep(Step):
             try:
                 sig_result = subprocess.run(
                     ["cosign", "sign-blob", "--key", str(key_path),
-                     "--output-signature", str(sig_path),
+                     "--bundle", str(sig_path),
                      str(image_tar)],
                     capture_output=True, text=True, timeout=60,
                     env=env,
@@ -80,7 +82,20 @@ class SignStep(Step):
                     ctx.add_artifact("cosign_sig", str(sig_path))
                     ctx.log(f"Image tar signed: {sig_path.name}")
                 else:
-                    ctx.log(f"Cosign sign-blob failed: {sig_result.stderr.strip()[:200]}")
+                    # Fallback: try old --output-signature flag for older cosign
+                    fallback = subprocess.run(
+                        ["cosign", "sign-blob", "--key", str(key_path),
+                         "--output-signature", str(sig_path),
+                         str(image_tar)],
+                        capture_output=True, text=True, timeout=60, env=env,
+                    )
+                    if fallback.returncode == 0:
+                        ctx.add_artifact("cosign_key", str(key_path))
+                        ctx.add_artifact("cosign_pub", str(pub_path))
+                        ctx.add_artifact("cosign_sig", str(sig_path))
+                        ctx.log(f"Image tar signed (legacy flag): {sig_path.name}")
+                    else:
+                        ctx.log(f"Cosign sign-blob failed: {sig_result.stderr.strip()[:200]}")
             except (FileNotFoundError, subprocess.TimeoutExpired) as e:
                 ctx.log(f"Cosign sign-blob error: {e}")
         else:

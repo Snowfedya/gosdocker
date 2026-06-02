@@ -141,21 +141,31 @@ class TestBuildEndpoint:
         assert "slug" in data
         assert data["slug"] == KNOWN_SLUG
         assert "status" in data
-        assert data["status"] in ("ok", "error")
         assert "profile" in data
         assert "sbom" in data
         assert "trivy" in data
+        assert "owasp" in data
         assert "cosign" in data
-        # SBOM shape
+        # SBOM shape — must have at least the component itself
         if data["sbom"] is not None:
             assert "total_components" in data["sbom"]
+            assert data["sbom"]["total_components"] >= 0
             assert "bom_format" in data["sbom"]
+            if data["status"] == "ok":
+                assert data["sbom"]["total_components"] > 0, \
+                    "SBOM must list at least one component when build succeeds"
         # Trivy shape
         if data["trivy"] is not None:
             assert "total_vulnerabilities" in data["trivy"]
             assert "by_severity" in data["trivy"]
+        # OWASP shape
+        if data["owasp"] is not None:
+            assert "total_dependencies" in data["owasp"]
+            assert "total_vulnerabilities" in data["owasp"]
         # Cosign shape
         assert "signed" in data["cosign"]
+        assert "public_key" in data["cosign"]
+        assert "signature" in data["cosign"]
 
 
 # --------------- full workflow ---------------

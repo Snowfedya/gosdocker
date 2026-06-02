@@ -37,12 +37,13 @@ export function useApi() {
 
   async function generateStack(
     slugs: string[],
-    config: Record<string, ComponentConfig>
+    config: Record<string, ComponentConfig>,
+    security_profile: string = 'basic'
   ): Promise<Blob> {
     const res = await fetch(`${API_BASE}/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ components: slugs, config }),
+      body: JSON.stringify({ components: slugs, config, security_profile }),
     })
     if (!res.ok) throw new Error('Ошибка генерации')
     return res.blob()

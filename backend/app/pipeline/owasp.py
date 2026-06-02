@@ -60,29 +60,35 @@ class DependencyCheckStep(Step):
         work_dir = ctx.work_dir
         work_dir.mkdir(parents=True, exist_ok=True)
 
-        # OWASP Dependency-Check scan is deferred - uses placeholder for now.
-        # The docker container owasp/dependency-check takes 5+ minutes on first
-        # run (downloading NVD database) and requires DooD volume path resolution.
-        # To enable: remove this early return and ensure REGISTRY_HOST_PATH is set.
-        self._write_placeholder(ctx, work_dir, slug)
-        return
-        # but /tmp is shared with host, so the path works for both.
+        # Resolve source directory (supports DooD host-path mapping)
+        source_dir_path = self._resolve_source_dir(slug)
+        if source_dir_path is None:
+            ctx.log(f"Source directory for {slug} not found — OWASP DC deferred")
+            self._write_placeholder(ctx, work_dir, slug)
+            return
+
+        source_dir = str(source_dir_path)
         output_dir = work_dir / "dependency-check-out"
         output_dir.mkdir(parents=True, exist_ok=True)
 
         try:
             ctx.log(f"OWASP DC scanning {slug} source @ {source_dir} ...")
+            # Use persistent cache to avoid re-downloading NVD database on every run.
+            # When inside Docker (DooD), the cache path must resolve on the host.
+            owasp_cache_host = os.environ.get("OWASP_DC_CACHE", "/tmp/owasp-dc-cache")
+            os.makedirs(owasp_cache_host, exist_ok=True)
             result = subprocess.run(
                 ["docker", "run", "--rm",
                  "-v", f"{source_dir}:/src:ro",
                  "-v", f"{output_dir}:/out:rw",
+                 "-v", f"{owasp_cache_host}:/usr/share/dependency-check/data:rw",
                  "owasp/dependency-check",
                  "--scan", "/src",
                  "--format", "JSON",
                  "--out", "/out",
                  "--failOnCVSS", "11",  # never fail the pipeline
                  "--suppression", "/dev/null"],
-                capture_output=True, text=True, timeout=600,
+                capture_output=True, text=True, timeout=180,
             )
 
             # Find the output JSON (owasp/dc creates a file named 'dependency-check-report.json')

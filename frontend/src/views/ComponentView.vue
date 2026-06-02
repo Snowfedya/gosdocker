@@ -419,9 +419,9 @@ async function dlManifest(slug: string) {
                   :disabled="reportLoading"
                 >
                   <option v-for="p in profiles" :key="p.slug" :value="p.slug">{{ p.label }}</option>
-                  <option v-if="!profiles.length" value="basic">Basic</option>
-                  <option value="standard">Standard</option>
-                  <option value="hardened">Hardened</option>
+                  <option v-if="!profiles.length" value="basic">Базовый</option>
+                  <option v-if="!profiles.length" value="standard">Стандартный</option>
+                  <option v-if="!profiles.length" value="hardened">Усиленный</option>
                 </select>
               </div>
               <button

@@ -2,8 +2,19 @@
 Seed script — fills database with components and stacks.
 """
 import asyncio
+import os
 from app.database import async_session, engine, Base
 from app.models import Category, Component, Stack
+
+
+def _get_credential(key: str, default: str, component: str) -> str:
+    """Get credential from environment or warn about insecure default."""
+    value = os.environ.get(key, default)
+    if value == default:
+        print(f"⚠️  {component}: using default credential '{default}'. "
+              f"Set {key}=<your-password> env for production use.")
+    return value
+
 
 CATEGORIES = [
     {"name": "Web", "slug": "web", "icon": "🌐", "description": "Веб-серверы и прокси", "sort_order": 1},
@@ -55,7 +66,7 @@ COMPONENTS = [
         "description": "Российская СУБД на базе PostgreSQL 17, реестр РЕД ОС",
         "version": "17",
         "default_ports": {"5432": 5432},
-        "default_env": {"POSTGRES_PASSWORD": "changeme", "TZ": "Europe/Moscow"},
+        "default_env": {"POSTGRES_PASSWORD": _get_credential("POSTGRES_PASSWORD", "changeme", "PostgreSQL РЕД ОС"), "TZ": "Europe/Moscow"},
         "template_file": "single/postgresql-redos/docker-compose.yml.j2"
     },
     {
@@ -69,7 +80,7 @@ COMPONENTS = [
         "description": "Популярная СУБД, проверенная временем",
         "version": "15-alpine",
         "default_ports": {"5432": 5432},
-        "default_env": {"POSTGRES_PASSWORD": "changeme", "TZ": "Europe/Moscow"},
+        "default_env": {"POSTGRES_PASSWORD": _get_credential("POSTGRES_PASSWORD", "changeme", "PostgreSQL РЕД ОС"), "TZ": "Europe/Moscow"},
         "template_file": "single/postgresql/docker-compose.yml.j2"
     },
     {
@@ -97,7 +108,7 @@ COMPONENTS = [
         "description": "Реляционная СУБД MariaDB с открытым исходным кодом, реестр РЕД ОС",
         "version": "10.6.20",
         "default_ports": {"3306": 3306},
-        "default_env": {"MARIADB_ROOT_PASSWORD": "changeme", "TZ": "Europe/Moscow"},
+        "default_env": {"MARIADB_ROOT_PASSWORD": _get_credential("MARIADB_ROOT_PASSWORD", "changeme", "MariaDB"), "TZ": "Europe/Moscow"},
         "template_file": "single/mariadb-redos/docker-compose.yml.j2"
     },
     {
@@ -126,7 +137,7 @@ COMPONENTS = [
         "description": "Облачное хранилище файлов с совместной работой",
         "version": "latest",
         "default_ports": {"8080": 80},
-        "default_env": {"POSTGRES_PASSWORD": "changeme", "TZ": "Europe/Moscow"},
+        "default_env": {"POSTGRES_PASSWORD": _get_credential("POSTGRES_PASSWORD", "changeme", "PostgreSQL РЕД ОС"), "TZ": "Europe/Moscow"},
         "template_file": "single/nextcloud/docker-compose.yml.j2"
     },
     # Monitoring
@@ -155,7 +166,7 @@ COMPONENTS = [
         "description": "Визуализация метрик и дашборды",
         "version": "latest",
         "default_ports": {"3000": 3000},
-        "default_env": {"GF_SECURITY_ADMIN_PASSWORD": "admin", "TZ": "Europe/Moscow"},
+        "default_env": {"GF_SECURITY_ADMIN_PASSWORD": _get_credential("GF_SECURITY_ADMIN_PASSWORD", "admin", "Grafana"), "TZ": "Europe/Moscow"},
         "template_file": "single/grafana/docker-compose.yml.j2"
     },
 ]
