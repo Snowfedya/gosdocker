@@ -49,6 +49,17 @@ class GenerateService:
             if not config.get("registry_url"):
                 config["registry_url"] = comp.registry_url
 
+            # Merge default ports/volumes/env from component if not overridden by user
+            if not config.get("ports") and hasattr(comp, 'default_ports') and comp.default_ports:
+                config["ports"] = comp.default_ports
+            if not config.get("volumes") and hasattr(comp, 'default_volumes') and comp.default_volumes:
+                config["volumes"] = comp.default_volumes
+            if hasattr(comp, 'default_env') and comp.default_env:
+                user_env = config.get("env", {})
+                merged = dict(comp.default_env)
+                merged.update(user_env)  # user overrides take precedence
+                config["env"] = merged
+
             # Render component template
             try:
                 content = self.template_service.render_single(slug, config)

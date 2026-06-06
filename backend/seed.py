@@ -46,7 +46,7 @@ COMPONENTS = [
         "category_slug": "web",
         "image": "nginx",
         "image_source": "dh-mirror.gitverse.ru",
-        "registry_url": "registry.red-soft.ru/ubi8/nginx",
+        "registry_url": "dh-mirror.gitverse.ru/library/nginx:latest",
         "is_registry": False,
         "description": "Веб-сервер, стандарт индустрии",
         "version": "1.28",

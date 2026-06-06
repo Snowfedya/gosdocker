@@ -12,10 +12,10 @@
       - "8080:80"
 {% endif %}
     environment:
-      MYSQL_HOST: postgresql-redos
-      MYSQL_DATABASE: nextcloud
-      MYSQL_USER: gosdocker
-      MYSQL_PASSWORD: {{ config.get('env', {}).get('MYSQL_PASSWORD', 'changeme') }}
+      POSTGRES_HOST: {{ config.get('db_host', 'postgresql-redos') }}
+      POSTGRES_DB: {{ config.get('db_name', 'nextcloud') }}
+      POSTGRES_USER: {{ config.get('db_user', 'gosdocker') }}
+      POSTGRES_PASSWORD: {{ config.get('env', {}).get('POSTGRES_PASSWORD', 'changeme') }}
 {% if config.get('env', {}).get('TZ') %}
       TZ: "{{ config.get('env', {}).get('TZ') }}"
 {% endif %}
@@ -29,6 +29,6 @@
       - nextcloud_data:/var/www/html
 {% endif %}
     depends_on:
-      - postgresql-redos
+      - {{ config.get('db_host', 'postgresql-redos') }}
     networks:
       - gosdocker
