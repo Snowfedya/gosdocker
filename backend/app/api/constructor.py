@@ -62,6 +62,7 @@ class ConstructorRequest(BaseModel):
     components: list[str]
     profile: str = "standard"
     configs: dict[str, dict] = {}
+    fast_mode: bool = False  # Skip security pipeline, generate compose only
 
     class Config:
         json_schema_extra = {
@@ -101,7 +102,7 @@ def _build_service_entry(slug: str, manifest: dict, config: dict) -> dict:
             "context": f"./build/{slug}",
             "dockerfile": "Dockerfile",
             "args": {
-                "VERSION": manifest.get("version", "latest"),
+                "VERSION": manifest.get("version", "1.0"),
             },
         },
         "networks": ["gosdocker"],
@@ -262,30 +263,31 @@ async def constructor_generate(body: ConstructorRequest):
             )
         manifests[slug] = yaml.safe_load(manifest_path.read_text())
 
-    # 3. Run security pipeline for each component (parallel)
+    # 3. Run security pipeline for each component (parallel) — skip in fast_mode
     pipeline_results: dict[str, PipelineContext] = {}
     security_errors: list[str] = []
 
-    loop = asyncio.get_running_loop()
-    tasks = []
-    for slug in resolved:
-        manifest = manifests[slug]
-        tasks.append(
-            loop.run_in_executor(
-                _executor,
-                _run_pipeline_for_component,
-                slug, manifest, body.profile,
+    if not body.fast_mode:
+        loop = asyncio.get_running_loop()
+        tasks = []
+        for slug in resolved:
+            manifest = manifests[slug]
+            tasks.append(
+                loop.run_in_executor(
+                    _executor,
+                    _run_pipeline_for_component,
+                    slug, manifest, body.profile,
+                )
             )
-        )
 
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    for slug, result in zip(resolved, results):
-        if isinstance(result, Exception):
-            security_errors.append(f"{slug}: {result}")
-        else:
-            pipeline_results[slug] = result
-            if result.errors:
-                security_errors.extend(f"{slug}: {e}" for e in result.errors)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for slug, result in zip(resolved, results):
+            if isinstance(result, Exception):
+                security_errors.append(f"{slug}: {result}")
+            else:
+                pipeline_results[slug] = result
+                if result.errors:
+                    security_errors.extend(f"{slug}: {e}" for e in result.errors)
 
     # 4. Generate ZIP
     buffer = io.BytesIO()

@@ -64,12 +64,8 @@ PROFILES: dict[str, dict[str, Any]] = {
 def apply_profile(compose_yaml: dict, profile: str = "standard") -> dict:
     """Apply security profile overrides to a docker-compose YAML dict.
 
-    Args:
-        compose_yaml: Parsed docker-compose YAML as dict (services section)
-        profile: One of 'basic', 'standard', 'hardened'
-
-    Returns:
-        Modified compose dict with profile overrides applied per service
+    When read_only is enabled, tmpfs mounts are added for services that
+    need writable paths (nginx cache, postgresql/mariadb run dirs, etc.).
     """
     profile_config = PROFILES.get(profile)
     if not profile_config:
@@ -77,13 +73,33 @@ def apply_profile(compose_yaml: dict, profile: str = "standard") -> dict:
 
     overrides = profile_config["service_overrides"]
 
+    # Service-specific tmpfs when read_only is enabled
+    READONLY_TMPFS: dict[str, list[str]] = {
+        "nginx": ["/var/cache/nginx", "/var/run", "/var/log/nginx", "/tmp"],
+        "postgresql-redos": ["/var/lib/pgsql", "/var/run/postgresql", "/tmp"],
+        "mariadb-redos": ["/var/run/mariadb", "/tmp"],
+        "postgresql": ["/var/run/postgresql", "/tmp"],
+        "mariadb": ["/var/run/mariadb", "/tmp"],
+        "clickhouse-redos": ["/var/run/clickhouse", "/tmp"],
+    }
+
     services = compose_yaml.get("services", {})
     for svc_name in list(services.keys()):
         for key, value in overrides.items():
-            # Don't override build: — it's essential
             if key == "build":
                 continue
             services[svc_name][key] = value
+
+        # If read_only is True, add tmpfs for known services
+        if overrides.get("read_only"):
+            tmpfs_paths = READONLY_TMPFS.get(svc_name, ["/tmp"])
+            existing_tmpfs = services[svc_name].get("tmpfs", [])
+            if isinstance(existing_tmpfs, dict):
+                existing_tmpfs = list(existing_tmpfs.keys())
+            for path in tmpfs_paths:
+                if path not in existing_tmpfs:
+                    existing_tmpfs.append(path)
+            services[svc_name]["tmpfs"] = existing_tmpfs
 
     compose_yaml["services"] = services
     return compose_yaml

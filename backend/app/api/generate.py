@@ -44,14 +44,22 @@ async def generate_compose(
                         # Parse compose, apply security profile, re-dump
                         compose = yaml.safe_load(data)
                         compose = apply_profile(compose, body.security_profile)
-                        header_lines = []
-                        for line in data.decode("utf-8").split("\n"):
-                            header_lines.append(line)
-                            if not line.startswith("#"):
-                                break
-                        header = "\n".join(header_lines[:5]) + "\n"
+                        comment_lines = [
+                            l for l in data.decode("utf-8").split("\n")
+                            if l.startswith("#") or l.strip() == ""
+                        ]
+                        header = "\n".join(comment_lines[:5]) + "\n"
+                        # Anchor-free dumper (docker compose rejects &id / *id aliases)
+                        class _NoAlias(yaml.SafeDumper):
+                            pass
+                        _NoAlias.add_representer(
+                            dict,
+                            lambda d, data: d.represent_mapping(
+                                "tag:yaml.org,2002:map", data.items()
+                            ),
+                        )
                         new_data = header + yaml.dump(
-                            compose, default_flow_style=False,
+                            compose, Dumper=_NoAlias, default_flow_style=False,
                             sort_keys=False, allow_unicode=True, indent=2
                         )
                         zout.writestr(item, new_data.encode("utf-8"))

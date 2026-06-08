@@ -46,7 +46,7 @@ COMPONENTS = [
         "category_slug": "web",
         "image": "nginx",
         "image_source": "dh-mirror.gitverse.ru",
-        "registry_url": "dh-mirror.gitverse.ru/library/nginx:latest",
+        "registry_url": "dh-mirror.gitverse.ru/library/nginx:1.28",
         "is_registry": False,
         "description": "Веб-сервер, стандарт индустрии",
         "version": "1.28",
@@ -135,7 +135,7 @@ COMPONENTS = [
         "registry_url": "dh-mirror.gitverse.ru/library/nextcloud",
         "is_registry": True,
         "description": "Облачное хранилище файлов с совместной работой",
-        "version": "latest",
+        "version": "33.0.5",
         "default_ports": {"8080": 80},
         "default_env": {"POSTGRES_PASSWORD": _get_credential("POSTGRES_PASSWORD", "changeme", "PostgreSQL РЕД ОС"), "TZ": "Europe/Moscow"},
         "template_file": "single/nextcloud/docker-compose.yml.j2"
@@ -150,7 +150,7 @@ COMPONENTS = [
         "registry_url": "dh-mirror.gitverse.ru/prom/prometheus",
         "is_registry": False,
         "description": "Сборщик метрик и мониторинга",
-        "version": "latest",
+        "version": "v2.55.1",
         "default_ports": {"9090": 9090},
         "default_env": {"TZ": "Europe/Moscow"},
         "template_file": "single/prometheus/docker-compose.yml.j2"
@@ -164,7 +164,7 @@ COMPONENTS = [
         "registry_url": "dh-mirror.gitverse.ru/grafana/grafana",
         "is_registry": False,
         "description": "Визуализация метрик и дашборды",
-        "version": "latest",
+        "version": "11.6.15",
         "default_ports": {"3000": 3000},
         "default_env": {"GF_SECURITY_ADMIN_PASSWORD": _get_credential("GF_SECURITY_ADMIN_PASSWORD", "admin", "Grafana"), "TZ": "Europe/Moscow"},
         "template_file": "single/grafana/docker-compose.yml.j2"

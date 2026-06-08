@@ -9,9 +9,9 @@
 {% endfor %}
 {% endif %}
     environment:
-      POSTGRES_DB: gosdocker
-      POSTGRES_USER: gosdocker
-      POSTGRES_PASSWORD: {{ config.get('env', {}).get('POSTGRES_PASSWORD', 'changeme') }}
+      POSTGRESQL_DATABASE: gosdocker
+      POSTGRESQL_USER: gosdocker
+      POSTGRESQL_PASSWORD: {{ config.get('env', {}).get('POSTGRES_PASSWORD', 'changeme') }}
 {% if config.get('env', {}).get('TZ') %}
       TZ: "{{ config.get('env', {}).get('TZ') }}"
 {% endif %}

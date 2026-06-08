@@ -1,5 +1,5 @@
   nginx:
-    image: {{ registry_url or 'nginx:latest' }}
+    image: {{ registry_url or 'nginx:1.28' }}
     container_name: nginx
     restart: unless-stopped
 {% if config.get('ports') %}

@@ -14,10 +14,24 @@ const slug = route.params.slug as string
 const { report, loading, error, score, scoreGrade, severitySummary, vulnerabilities, load } = useSecurityReport(slug)
 
 const activeTab = ref<'vulns' | 'deps'>('vulns')
+const scanning = ref(false)
 
-onMounted(() => {
-  load()
+onMounted(async () => {
+  await load()
+  // Auto-run scan if no report exists yet
+  if (!report.value) {
+    await runScan()
+  }
 })
+
+async function runScan(profile: string = 'standard') {
+  scanning.value = true
+  try {
+    await scan(profile)
+  } finally {
+    scanning.value = false
+  }
+}
 
 function exportJson() {
   if (!report.value) return
@@ -72,10 +86,11 @@ const depsArray = computed(() => report.value?.sbom?.top_dependencies ?? [])
       </div>
     </div>
 
-    <!-- Loading -->
-    <div v-if="loading" class="text-center py-16">
+    <!-- Loading / Scanning -->
+    <div v-if="loading || scanning" class="text-center py-16">
       <div class="inline-block w-8 h-8 border-4 border-primary-200 border-t-primary-600 rounded-full animate-spin" />
-      <p class="mt-4 text-gray-500">Загрузка отчёта...</p>
+      <p class="mt-4 text-gray-500">{{ scanning ? 'Запуск сканирования безопасности...' : 'Загрузка отчёта...' }}</p>
+      <p v-if="scanning" class="mt-2 text-xs text-gray-400">Это может занять до 2 минут</p>
     </div>
 
     <!-- Error / empty -->
@@ -83,14 +98,15 @@ const depsArray = computed(() => report.value?.sbom?.top_dependencies ?? [])
       class="bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 shadow-sm p-12 text-center">
       <AppIcon name="shield" class="w-14 h-14 mx-auto mb-3 text-gray-300 dark:text-slate-600" />
       <h2 class="text-xl font-bold text-gray-900 dark:text-white mb-2">Отчёт не найден</h2>
-      <p class="text-gray-500 dark:text-slate-400 mb-6">{{ error || 'Сканирование не выполнено. Запустите проверку на странице компонента.' }}</p>
-      <router-link
-        :to="`/components/${slug}#security`"
-        class="inline-flex items-center gap-2 px-5 py-2.5 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 transition shadow-sm"
+      <p class="text-gray-500 dark:text-slate-400 mb-6">{{ error || 'Сканирование не выполнено.' }}</p>
+      <button
+        @click="runScan()"
+        :disabled="scanning"
+        class="inline-flex items-center gap-2 px-5 py-2.5 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 transition shadow-sm disabled:opacity-40"
       >
-        <AppIcon name="arrow-left" class="w-4 h-4" />
-        На страницу компонента
-      </router-link>
+        <AppIcon :name="scanning ? 'refresh' : 'shield'" class="w-4 h-4" :class="scanning ? 'animate-spin' : ''" />
+        {{ scanning ? 'Сканирование...' : 'Запустить проверку' }}
+      </button>
     </div>
 
     <!-- Report content -->

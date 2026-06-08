@@ -71,6 +71,7 @@ async function generate() {
     const blob = await constructorGenerate({
       components: selectedSlugs,
       profile: selectedProfile.value,
+      fast_mode: true,
       configs: {},
     })
     const url = URL.createObjectURL(blob)

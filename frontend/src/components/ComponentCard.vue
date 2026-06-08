@@ -21,6 +21,7 @@ async function quickDownload() {
       const blob = await constructorGenerate({
         components: [props.component.slug],
         profile: selectedProfile.value,
+        fast_mode: true,
         configs: {
           [props.component.slug]: {
             ports: { ...props.component.default_ports },
