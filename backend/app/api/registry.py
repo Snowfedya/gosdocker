@@ -272,10 +272,25 @@ def _save_report_cache(slug: str, report: dict):
 
 
 def _load_report_cache(slug: str) -> dict | None:
-    """Load cached report, or None if not found."""
+    """Load cached report, or None if not found / stale.
+
+    AC-3: if the manifest mtime is newer than the cache mtime, the
+    cache is treated as stale and ``None`` is returned — the caller
+    (GET /reports) should re-trigger a build or return 404 to prompt
+    the UI to do so. Without this, an unchanged report with stale
+    "0 vulns" could persist for hours after the manifest changes.
+    """
     cache_file = REPORTS_DIR / slug / "latest.json"
     if not cache_file.exists():
         return None
+    # AC-3: invalidate cache when manifest mtime > cache mtime
+    manifest_path = REGISTRY_BASE / slug / "manifest.yml"
+    if manifest_path.exists():
+        try:
+            if manifest_path.stat().st_mtime > cache_file.stat().st_mtime:
+                return None
+        except OSError:
+            pass
     try:
         return json.loads(cache_file.read_text())
     except (json.JSONDecodeError, OSError):
