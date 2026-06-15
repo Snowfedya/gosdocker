@@ -259,6 +259,13 @@ def _build_report_from_context(slug: str, profile: str, artifacts: dict, errors:
             "trivy_skipped": True,
         }
 
+    # ── AC-5: security score (None if data missing — never a fake 100) ──
+    report["security_score"] = _compute_security_score(
+        trivy=report["trivy"],
+        owasp=report["owasp"],
+        cosign_signed=bool(report.get("cosign", {}).get("signed")),
+    )
+
     return report
 
 
@@ -272,6 +279,41 @@ def _any_file_artifact(artifacts: dict) -> bool:
             except OSError:
                 continue
     return False
+
+
+# ────────────────────────────────────────────────────────────────────
+# AC-5: security score
+# ────────────────────────────────────────────────────────────────────
+# We refuse to return a fake "100" for a degraded build. Score is
+# only computed from real Trivy + OWASP data; if either is missing,
+# score is None and the report's `status` is "degraded" — the UI
+# banner tells the user "scan incomplete, score unavailable".
+
+def _compute_security_score(trivy: dict | None, owasp: dict | None,
+                             cosign_signed: bool) -> int | None:
+    """Compute a 0-100 security score, or None if inputs are missing.
+
+    Algorithm (deliberately simple, easy to defend on exam):
+      start at 100
+      - 25 per CRITICAL (cap 100)
+      - 10 per HIGH
+      - 3  per MEDIUM
+      - 1  per LOW
+      +  5 if cosign signed
+      - if either trivy or owasp is missing, return None
+        (we cannot claim a meaningful score)
+    """
+    if trivy is None or owasp is None:
+        return None
+    sev = trivy.get("by_severity", {}) or {}
+    score = 100
+    score -= 25 * sev.get("CRITICAL", 0)
+    score -= 10 * sev.get("HIGH", 0)
+    score -= 3  * sev.get("MEDIUM", 0)
+    score -= 1  * sev.get("LOW", 0)
+    if cosign_signed:
+        score += 5
+    return max(0, min(100, score))
 
 
 def _save_report_cache(slug: str, report: dict):
