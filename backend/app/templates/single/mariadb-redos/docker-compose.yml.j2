@@ -1,5 +1,5 @@
 mariadb-redos:
-    image: {{ registry_url or 'registry.red-soft.ru/ubi8/mariadb-server' }}
+    image: {{ registry_url or 'dh-mirror.gitverse.ru/library/mariadb:10.6' }}
     container_name: mariadb-redos
     restart: unless-stopped
 {% if config.get('ports') %}

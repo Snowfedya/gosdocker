@@ -9,6 +9,7 @@ import type {
   SecurityProfile,
   SecurityReport,
 } from '../types'
+import { throwOnError } from './apiErrors'
 
 const API_BASE = '/api'
 
@@ -45,7 +46,7 @@ export function useApi() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ components: slugs, config, security_profile }),
     })
-    if (!res.ok) throw new Error('Ошибка генерации')
+    if (!res.ok) await throwOnError(res, 'Ошибка генерации')
     return res.blob()
   }
 

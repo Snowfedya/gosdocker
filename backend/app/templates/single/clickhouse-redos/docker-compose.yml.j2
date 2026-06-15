@@ -1,5 +1,5 @@
 clickhouse-redos:
-    image: {{ registry_url or 'registry.red-soft.ru/ubi8/clickhouse-server' }}
+    image: {{ registry_url or 'dh-mirror.gitverse.ru/clickhouse/clickhouse-server:24.3' }}
     container_name: clickhouse-redos
     restart: unless-stopped
 {% if config.get('ports') %}

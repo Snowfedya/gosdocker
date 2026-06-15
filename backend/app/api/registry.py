@@ -233,10 +233,34 @@ async def list_registry():
 @router.get("/{slug}")
 async def get_registry_component(slug: str):
     _validate_slug(slug)
-    """Get full component manifest."""
+    """Get full component manifest, merged with DB columns (image/registry_url/...)."""
     manifest = _load_manifest(slug)
     if not manifest:
         raise HTTPException(status_code=404, detail=f"Component '{slug}' not found in registry")
+
+    # Merge with DB row so frontend (ComponentView.vue) can render
+    # registry_url / image_source / image / is_registry / registry_number.
+    # DB is authoritative for image URLs; manifest is authoritative for
+    # build args, source-build recipe, security profile shapes.
+    from app.database import async_session
+    from app.models import Component
+    from sqlalchemy import select
+    try:
+        async with async_session() as session:
+            r = await session.execute(select(Component).where(Component.slug == slug))
+            comp_row = r.scalar_one_or_none()
+        if comp_row is not None:
+            comp = dict(manifest.get("component", {}))
+            comp["image"] = comp_row.image or ""
+            comp["image_source"] = comp_row.image_source or ""
+            comp["registry_url"] = comp_row.registry_url or ""
+            comp["is_registry"] = bool(comp_row.is_registry)
+            comp["registry_number"] = comp_row.registry_number
+            manifest = {**manifest, "component": comp}
+    except Exception:
+        # If DB is down, return the manifest as-is — better than 500
+        pass
+
     return manifest
 
 

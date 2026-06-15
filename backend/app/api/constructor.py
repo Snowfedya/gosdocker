@@ -25,6 +25,7 @@ from app.pipeline import (
 from app.pipeline.base import PipelineContext
 from app.services.dependency_resolver import DependencyResolver
 from app.services.security_profiles import apply_profile, list_profiles, get_profile_info
+from app.services.port_preflight import check_port_conflicts, PortConflictError
 
 router = APIRouter(prefix="/api/constructor", tags=["constructor"])
 
@@ -81,7 +82,53 @@ class ConstructorDiagnostic(BaseModel):
     errors: list[str] = []
 
 
+class _ManifestComponent:
+    """Duck-typed component used by port_preflight.
+
+    port_preflight expects objects with `.slug` and `.default_ports` (the
+    shape of ORM `Component` rows, where the dict is `{host_port: int}`).
+    Manifests on disk, however, store `component.ports` as
+    `{protocol_name: container_port}` (e.g. `{"http": 80, "https": 443}`).
+    This shim normalises both into the host-port format the conflict
+    checker expects.
+    """
+    __slots__ = ("slug", "default_ports")
+
+    def __init__(self, slug: str, manifest: dict):
+        self.slug = slug
+        raw = (
+            manifest.get("component", {}).get("ports", {})
+            or manifest.get("ports", {})
+            or {}
+        )
+        # Translate {name: port} → {port: port}. Anything non-numeric is
+        # silently skipped — port_preflight raises a clearer error than
+        # `int("http")` would.
+        normalised: dict[str, int] = {}
+        for v in raw.values():
+            try:
+                port = int(v)
+            except (TypeError, ValueError):
+                continue
+            normalised[str(port)] = port
+        self.default_ports = normalised
+
+
 # ── Helpers ──────────────────────────────────────────────────────────
+
+
+def _load_manifests(slugs: list[str]) -> dict[str, dict]:
+    """Bulk-load manifests for port_preflight.
+
+    Returns a dict slug → parsed manifest. Missing manifests are silently
+    skipped (the diagnostic path will report them in `errors` anyway).
+    """
+    out: dict[str, dict] = {}
+    for slug in slugs:
+        manifest_path = REGISTRY_BASE / slug / "manifest.yml"
+        if manifest_path.exists():
+            out[slug] = yaml.safe_load(manifest_path.read_text())
+    return out
 
 
 def _run_pipeline_for_component(
@@ -230,6 +277,27 @@ async def constructor_diagnostic(body: ConstructorRequest):
         if not manifest_path.exists():
             errors.append(f"Component '{slug}' has no manifest in registry")
 
+    # Port conflict check (mirrors /api/generate behaviour).
+    # Components are loaded as duck-typed objects so port_preflight can read
+    # `.slug` and `.default_ports` (the same shape it expects from ORM rows).
+    manifests_for_ports = _load_manifests(resolved)
+    components_for_ports = [_ManifestComponent(s, manifests_for_ports[s]) for s in resolved if s in manifests_for_ports]
+    try:
+        check_port_conflicts(components_for_ports, body.configs)
+    except PortConflictError as e:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "port_conflict",
+                "message": (
+                    "Selected components bind the same host port. "
+                    "Remap one of them under 'config.<slug>.ports' "
+                    "and retry."
+                ),
+                "conflicts": e.conflicts,
+            },
+        )
+
     return ConstructorDiagnostic(
         resolved=resolved,
         auto_added=auto_added,
@@ -251,6 +319,25 @@ async def constructor_generate(body: ConstructorRequest):
 
     # 1. Resolve dependencies
     resolved, auto_added = resolver.resolve_with_metadata(body.components)
+
+    # 1a. Port conflict check (early-fail before running the security pipeline)
+    manifests_for_ports = _load_manifests(resolved)
+    components_for_ports = [_ManifestComponent(s, manifests_for_ports[s]) for s in resolved if s in manifests_for_ports]
+    try:
+        check_port_conflicts(components_for_ports, body.configs)
+    except PortConflictError as e:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "port_conflict",
+                "message": (
+                    "Selected components bind the same host port. "
+                    "Remap one of them under 'config.<slug>.ports' "
+                    "and retry."
+                ),
+                "conflicts": e.conflicts,
+            },
+        )
 
     # 2. Validate all components exist
     manifests = {}

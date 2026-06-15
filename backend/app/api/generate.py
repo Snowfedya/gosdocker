@@ -1,4 +1,5 @@
 import io
+import logging
 import yaml
 import zipfile
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,6 +11,9 @@ from ..models import Component
 from ..schemas.generate import GenerateRequest
 from ..services.generate_service import GenerateService
 from ..services.security_profiles import apply_profile
+from ..services.port_preflight import check_port_conflicts, PortConflictError
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/generate", tags=["generate"])
 
@@ -26,6 +30,26 @@ async def generate_compose(
 
     if not components:
         raise HTTPException(status_code=404, detail="No components found")
+
+    # Pre-flight: reject requests whose host ports would collide at runtime.
+    # Must run BEFORE we render the ZIP, so the user gets a structured 409
+    # with the offending services + port.
+    try:
+        check_port_conflicts(list(components), body.config)
+    except PortConflictError as e:
+        logger.info("Port conflict rejected: %s", e)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "port_conflict",
+                "message": (
+                    "Selected components bind the same host port. "
+                    "Remap one of them under 'config.<slug>.ports' "
+                    "and retry."
+                ),
+                "conflicts": e.conflicts,
+            },
+        )
 
     # Generate ZIP
     service = GenerateService()

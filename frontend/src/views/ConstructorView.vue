@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useApi } from '../composables/useApi'
+import { PortConflictError } from '../composables/apiErrors'
 import type { RegistryComponent, SecurityProfile, ConstructorDiagnostic } from '../types'
 import AppIcon from '../components/AppIcon.vue'
 
@@ -12,6 +13,11 @@ const selected = ref<Record<string, boolean>>({})
 const selectedProfile = ref('standard')
 const loading = ref(true)
 const generating = ref(false)
+// Reuse error state for both generate and diagnostic, but render the
+// structured conflict list (host_port + services) when the backend
+// rejects with 409. Without this branch the user only sees a generic
+// "Ошибка генерации" toast and has no idea which port to remap.
+const conflicts = ref<Array<{ host_port: number; services: string[] }> | null>(null)
 const error = ref<string | null>(null)
 const result = ref<ConstructorDiagnostic | null>(null)
 const showResult = ref(false)
@@ -81,7 +87,13 @@ async function generate() {
     a.click()
     URL.revokeObjectURL(url)
   } catch (e) {
-    error.value = `Ошибка генерации: ${(e as Error).message}`
+    if (e instanceof PortConflictError) {
+      conflicts.value = e.conflicts
+      error.value = `Конфликты портов (${e.conflicts.length}): выберите другие компоненты или измените config.ports`
+    } else {
+      conflicts.value = null
+      error.value = `Ошибка генерации: ${(e as Error).message}`
+    }
   } finally {
     generating.value = false
   }
@@ -123,6 +135,20 @@ const categoryLabels: Record<string, string> = {
         <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Выберите компоненты:</h2>
 
         <div v-if="loading" class="text-center py-8 text-gray-500">Загрузка...</div>
+        <div v-else-if="conflicts" class="bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 px-4 py-3 rounded-lg text-sm mb-4">
+          <p class="font-medium mb-2">{{ error }}</p>
+          <ul class="list-disc list-inside space-y-1">
+            <li v-for="(c, i) in conflicts" :key="i">
+              Порт <span class="font-mono font-bold">{{ c.host_port }}</span> — конфликт:
+              <span v-for="(s, j) in c.services" :key="j">
+                <code class="px-1 bg-red-100 dark:bg-red-900/40 rounded">{{ s }}</code><span v-if="j < c.services.length - 1">, </span>
+              </span>
+            </li>
+          </ul>
+          <p class="text-xs mt-2 text-red-500/80">
+            Измените порт через <code>config.&lt;slug&gt;.ports</code> или уберите один из компонентов.
+          </p>
+        </div>
         <div v-else-if="error" class="bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 px-4 py-3 rounded-lg text-sm mb-4">{{ error }}</div>
 
         <div v-for="(comps, cat) in categoryGroups" :key="cat" class="mb-6">

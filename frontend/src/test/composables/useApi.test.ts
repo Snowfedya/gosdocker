@@ -105,6 +105,53 @@ describe('useApi', () => {
       })
       expect(result).toBe(blob)
     })
+
+    it('throws PortConflictError on 409 with structured detail', async () => {
+      // Backend returns FastAPI-style 409 with detail.conflicts
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        json: () => Promise.resolve({
+          detail: {
+            error: 'port_conflict',
+            conflicts: [
+              { host_port: 80, services: ['nginx', 'angie-pro'] },
+              { host_port: 443, services: ['nginx', 'angie-pro'] },
+            ],
+          },
+        }),
+      })
+
+      const { generateStack } = useApi()
+      let caught: unknown
+      try {
+        await generateStack(['nginx', 'angie-pro'], { nginx: { ports: {}, volumes: {}, env: {} } })
+      } catch (e) {
+        caught = e
+      }
+      expect(caught).toBeDefined()
+      // The thrown error must expose .conflicts and .status for the UI
+      const err = caught as { name?: string; status?: number; conflicts?: unknown[]; message?: string }
+      expect(err.name).toBe('PortConflictError')
+      expect(err.status).toBe(409)
+      expect(Array.isArray(err.conflicts)).toBe(true)
+      expect(err.conflicts).toHaveLength(2)
+      expect((err.conflicts![0] as { host_port: number }).host_port).toBe(80)
+      // Message must mention the first conflict for fallback display
+      expect(err.message).toMatch(/порт|80|nginx/i)
+    })
+
+    it('throws a generic Error on 500 without detail', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: () => Promise.reject(new Error('not json')),
+      })
+
+      const { generateStack } = useApi()
+      await expect(generateStack(['nginx'], { nginx: { ports: {}, volumes: {}, env: {} } }))
+        .rejects.toThrow(/Ошибка генерации/)
+    })
   })
 
   describe('fetchReports', () => {
