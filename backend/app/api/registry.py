@@ -6,8 +6,11 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database import get_db
 
 from app.pipeline import (
     Pipeline, BuildStep, ScanStep, PackageStep, RegisterStep,
@@ -53,10 +56,11 @@ def _list_registry_components() -> list[str]:
 def _load_manifest(slug: str) -> dict | None:
     """Load and parse manifest.yml for a component slug.
 
-    AC-2 helper: enrich the manifest with ``component.image`` sourced
-    from the Component table (``registry_url`` field), so ScanStep can
-    fall back to scanning the upstream image when our built artifact
-    is not present.
+    NOTE: DB enrichment (registry_url, image_source, is_registry) is
+    applied at the route level in get_registry_component — kept out of
+    this helper so it stays a pure YAML reader (Bug #4: was running
+    asyncio.run() in a thread from pytest, which silently failed under
+    pytest-asyncio STRICT mode and dropped the merged fields).
     """
     import yaml
     manifest_path = REGISTRY_BASE / slug / "manifest.yml"
@@ -65,41 +69,6 @@ def _load_manifest(slug: str) -> dict | None:
     manifest = yaml.safe_load(manifest_path.read_text())
     if not isinstance(manifest, dict):
         return None
-
-    # AC-2: merge image from DB so ScanStep can fallback on source image.
-    # Run in a dedicated thread to avoid clashes with any event loop
-    # that may already be running (pytest-asyncio, FastAPI handlers, etc).
-    try:
-        from app.database import async_session
-        from sqlalchemy import select
-        from app.models import Component
-        import asyncio
-
-        async def _fetch_image() -> str | None:
-            async with async_session() as s:
-                r = await s.execute(
-                    select(Component.registry_url).where(Component.slug == slug)
-                )
-                return r.scalar_one_or_none()
-
-        container: dict[str, Any] = {}
-
-        def _runner() -> None:
-            try:
-                container["url"] = asyncio.run(_fetch_image())
-            except Exception as e:  # pragma: no cover - defensive
-                container["error"] = str(e)
-
-        import threading
-        t = threading.Thread(target=_runner, daemon=True)
-        t.start()
-        t.join(timeout=5)
-        registry_url = container.get("url")
-        if registry_url:
-            comp = manifest.setdefault("component", {})
-            comp.setdefault("image", registry_url)
-    except Exception:
-        pass
     return manifest
 
 
@@ -376,12 +345,46 @@ async def list_registry():
 
 
 @router.get("/{slug}")
-async def get_registry_component(slug: str):
+async def get_registry_component(
+    slug: str,
+    db: AsyncSession = Depends(get_db),
+):
     _validate_slug(slug)
-    """Get full component manifest."""
+    """Get full component manifest, enriched with DB row (registry_url,
+    image_source, is_registry) for ComponentView.vue frontend rendering.
+    """
     manifest = _load_manifest(slug)
     if not manifest:
         raise HTTPException(status_code=404, detail=f"Component '{slug}' not found in registry")
+
+    # AC-2: merge image + image_source + registry_url + is_registry from
+    # DB. Bug #4: ComponentView.vue:205 needs `registry_url`; image_source
+    # at :249. Both MUST be merged from DB row, not buried in `image`.
+    try:
+        from sqlalchemy import select
+        from app.models import Component
+
+        r = await db.execute(
+            select(
+                Component.registry_url,
+                Component.image_source,
+                Component.is_registry,
+                Component.registry_number,
+            ).where(Component.slug == slug)
+        )
+        row = r.first()
+        if row is not None and row.registry_url:
+            comp = manifest.setdefault("component", {})
+            comp["registry_url"] = row.registry_url
+            comp["image_source"] = row.image_source or row.registry_url
+            comp["is_registry"] = bool(row.is_registry)
+            if row.registry_number is not None:
+                comp["registry_number"] = row.registry_number
+            comp.setdefault("image", row.registry_url)
+    except Exception:
+        # Manifest-only response is still useful (e.g. registry scanner),
+        # don't 500 because DB lookup failed.
+        pass
     return manifest
 
 
