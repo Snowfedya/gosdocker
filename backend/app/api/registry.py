@@ -49,12 +49,48 @@ def _list_registry_components() -> list[str]:
 
 
 def _load_manifest(slug: str) -> dict | None:
-    """Load and parse manifest.yml for a component slug."""
+    """Load and parse manifest.yml for a component slug.
+
+    AC-2 helper: enrich the manifest with ``component.image`` sourced
+    from the Component table (``registry_url`` field), so ScanStep can
+    fall back to scanning the upstream image when our built artifact
+    is not present.
+    """
     import yaml
     manifest_path = REGISTRY_BASE / slug / "manifest.yml"
     if not manifest_path.exists():
         return None
-    return yaml.safe_load(manifest_path.read_text())
+    manifest = yaml.safe_load(manifest_path.read_text())
+    if not isinstance(manifest, dict):
+        return None
+
+    # AC-2: merge image from DB so ScanStep can fallback on source image
+    try:
+        from app.database import async_session
+        from sqlalchemy import select
+        from app.models import Component
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        async def _fetch_image():
+            async with async_session() as s:
+                r = await s.execute(select(Component.registry_url).where(Component.slug == slug))
+                v = r.scalar_one_or_none()
+                return v
+        try:
+            registry_url = loop.run_until_complete(_fetch_image())
+        except Exception:
+            registry_url = None
+        if registry_url:
+            comp = manifest.setdefault("component", {})
+            comp.setdefault("image", registry_url)
+    except Exception:
+        pass
+    return manifest
 
 
 def _parse_sbom_summary(sbom_path: Path) -> dict:

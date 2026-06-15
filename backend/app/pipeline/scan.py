@@ -75,8 +75,14 @@ def _generate_sbom_via_syft(source_dir: str, slug: str) -> dict | None:
     return None
 
 
-def _run_trivy_image(slug: str, work_dir: Path) -> str | None:
-    """Run Trivy on the built Docker image, return report path or None.
+def _run_trivy_image(slug: str, work_dir: Path, fallback_image: str | None = None) -> str | None:
+    """Run Trivy against the built image, falling back to source image.
+
+    AC-2: When ``gosdocker/<slug>:latest`` was not built (build degraded),
+    trivy cannot scan it. We fall back to the source image declared in the
+    manifest (e.g. ``dh-mirror.gitverse.ru/riftbit/angie:latest``) so the
+    scan still returns real CVE data on the actual upstream image the user
+    would deploy.
 
     First checks if the Docker image exists — if not, returns None immediately
     instead of hanging for 320 seconds on a pull attempt.
@@ -85,10 +91,15 @@ def _run_trivy_image(slug: str, work_dir: Path) -> str | None:
     if not trivy_path:
         return None
 
-    # Check if the Docker image actually exists before trying to scan it
+    # AC-2: pick scan target — built image if present, else manifest source
+    target = _scan_target_for_slug(slug, fallback_image)
+    if not target:
+        return None
+
+    # Check if the target image actually exists before trying to scan it
     try:
         img_check = subprocess.run(
-            ["docker", "images", "-q", f"gosdocker/{slug}:latest"],
+            ["docker", "images", "-q", target],
             capture_output=True, text=True, timeout=15,
         )
         if not img_check.stdout.strip():
@@ -100,7 +111,7 @@ def _run_trivy_image(slug: str, work_dir: Path) -> str | None:
     try:
         result = subprocess.run(
             [trivy_path, "image", "--format=json", "--output", str(trivy_out),
-             f"gosdocker/{slug}:latest", "--timeout", "5m"],
+             target, "--timeout", "5m"],
             capture_output=True, text=True, timeout=320,
         )
         if result.returncode == 0:
@@ -108,6 +119,41 @@ def _run_trivy_image(slug: str, work_dir: Path) -> str | None:
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
 
+    return None
+
+
+def _local_image_exists(image_ref: str) -> bool:
+    """Return True if ``docker images`` lists the given ref locally.
+
+    AC-2 helper. Tolerates docker errors (returns False, not raise) so the
+    caller can fall back to the source image without a stack trace.
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "images", "--format", "{{.Repository}}:{{.Tag}}"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return False
+        refs = {line.strip() for line in (result.stdout or "").splitlines() if line.strip()}
+        return image_ref in refs
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
+
+
+def _scan_target_for_slug(slug: str, fallback_image: str | None) -> str | None:
+    """Pick the image trivy should scan.
+
+    Priority:
+    1. ``gosdocker/<slug>:latest`` — our built artifact (most accurate)
+    2. ``fallback_image`` — manifest source image (e.g. upstream registry)
+    3. None — no target, caller should skip
+    """
+    built = f"gosdocker/{slug}:latest"
+    if _local_image_exists(built):
+        return built
+    if fallback_image and fallback_image.strip():
+        return fallback_image.strip()
     return None
 
 
@@ -180,7 +226,9 @@ class ScanStep(Step):
         ctx.log(f"SBOM generated: {sbom_path.name} ({'syft' if 'syft' in json.dumps(sbom.get('metadata', {})) else 'metadata fallback'})")
 
         # 2. Try Trivy scan (image → fs → placeholder)
-        trivy_report = _run_trivy_image(slug, work_dir) \
+        # AC-2: pass manifest source image as fallback for image scan
+        fallback_image = (ctx.manifest.get("component", {}).get("image", "") or "").strip()
+        trivy_report = _run_trivy_image(slug, work_dir, fallback_image=fallback_image or None) \
                        or _run_trivy_filesystem(slug, source_dir, work_dir) \
                        or _generate_trivy_placeholder(slug, work_dir)
         ctx.add_artifact("trivy_report", trivy_report)
