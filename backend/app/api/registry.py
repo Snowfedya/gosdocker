@@ -2,6 +2,7 @@
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -149,11 +150,29 @@ def _parse_owasp_summary(owasp_path: Path) -> dict:
 
 
 def _build_report_from_context(slug: str, profile: str, artifacts: dict, errors: list) -> dict:
-    """Build a structured security report from pipeline artifacts."""
+    """Build a structured security report from pipeline artifacts.
+
+    AC-1: distinguishes degraded mode (build skipped, no artifacts) from
+    a successful scan. Returns ``status: "degraded"`` and ``degraded: True``
+    when no file artifacts were produced, so the UI cannot display a
+    false-positive "A 100 / 0 vulnerabilities" green badge.
+    """
+    # ── Step 1: collect flags + file paths separately ──────────────────
+    flags: dict[str, Any] = {}
+    for art_key, art_value in artifacts.items():
+        if isinstance(art_value, bool):
+            flags[art_key] = art_value
+
+    degraded = bool(flags.get("build_degraded", False)) or not _any_file_artifact(artifacts)
+    trivy_skipped = bool(flags.get("trivy_skipped", False)) or degraded
+
+    # ── Step 2: initialise report skeleton with degraded fields ────────
     report: dict = {
         "slug": slug,
         "profile": profile,
-        "status": "ok" if not errors else "error",
+        "status": "degraded" if degraded else ("error" if errors else "ok"),
+        "degraded": degraded,
+        "trivy_skipped": trivy_skipped,
         "errors": errors,
         "sbom": None,
         "trivy": None,
@@ -161,8 +180,9 @@ def _build_report_from_context(slug: str, profile: str, artifacts: dict, errors:
         "cosign": {"signed": False, "public_key": None, "signature": None},
     }
 
+    # ── Step 3: ingest path-typed artifacts (skip non-string/Path) ────
     for art_key, art_path_str in artifacts.items():
-        if not art_path_str:
+        if not isinstance(art_path_str, (str, Path)):
             continue
         art_path = Path(art_path_str)
         if not art_path.exists():
@@ -173,6 +193,7 @@ def _build_report_from_context(slug: str, profile: str, artifacts: dict, errors:
             report["sbom"] = summary
         elif art_key == "trivy_report":
             summary = _parse_trivy_summary(art_path)
+            summary["trivy_skipped"] = False
             report["trivy"] = summary
         elif art_key == "owasp_report":
             summary = _parse_owasp_summary(art_path)
@@ -183,7 +204,28 @@ def _build_report_from_context(slug: str, profile: str, artifacts: dict, errors:
         elif art_key == "cosign_pub":
             report["cosign"]["public_key"] = str(art_path)
 
+    # ── Step 4: when trivy didn't run, leave explicit marker ──────────
+    if report["trivy"] is None and trivy_skipped:
+        report["trivy"] = {
+            "total_vulnerabilities": 0,
+            "by_severity": {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "UNKNOWN": 0},
+            "vulnerabilities": [],
+            "trivy_skipped": True,
+        }
+
     return report
+
+
+def _any_file_artifact(artifacts: dict) -> bool:
+    """Return True if at least one path-typed artifact exists on disk."""
+    for art_value in artifacts.values():
+        if isinstance(art_value, (str, Path)):
+            try:
+                if Path(art_value).exists():
+                    return True
+            except OSError:
+                continue
+    return False
 
 
 def _save_report_cache(slug: str, report: dict):
@@ -233,34 +275,10 @@ async def list_registry():
 @router.get("/{slug}")
 async def get_registry_component(slug: str):
     _validate_slug(slug)
-    """Get full component manifest, merged with DB columns (image/registry_url/...)."""
+    """Get full component manifest."""
     manifest = _load_manifest(slug)
     if not manifest:
         raise HTTPException(status_code=404, detail=f"Component '{slug}' not found in registry")
-
-    # Merge with DB row so frontend (ComponentView.vue) can render
-    # registry_url / image_source / image / is_registry / registry_number.
-    # DB is authoritative for image URLs; manifest is authoritative for
-    # build args, source-build recipe, security profile shapes.
-    from app.database import async_session
-    from app.models import Component
-    from sqlalchemy import select
-    try:
-        async with async_session() as session:
-            r = await session.execute(select(Component).where(Component.slug == slug))
-            comp_row = r.scalar_one_or_none()
-        if comp_row is not None:
-            comp = dict(manifest.get("component", {}))
-            comp["image"] = comp_row.image or ""
-            comp["image_source"] = comp_row.image_source or ""
-            comp["registry_url"] = comp_row.registry_url or ""
-            comp["is_registry"] = bool(comp_row.is_registry)
-            comp["registry_number"] = comp_row.registry_number
-            manifest = {**manifest, "component": comp}
-    except Exception:
-        # If DB is down, return the manifest as-is — better than 500
-        pass
-
     return manifest
 
 
