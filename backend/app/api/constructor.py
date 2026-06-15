@@ -164,10 +164,22 @@ def _build_service_entry(slug: str, manifest: dict, config: dict) -> dict:
 
     env = manifest.get("default_env", {})
     user_env = config.get("env", {})
+    merged_env: dict = {}
     if user_env:
-        service["environment"] = {**env, **user_env}
+        merged_env = {**env, **user_env}
     elif env:
-        service["environment"] = env
+        merged_env = dict(env)
+    if merged_env:
+        # Sanitize secret env values (Bug #6). Same rule as in
+        # GenerateService._render_compose. The KEY is preserved so users
+        # see what to set; the value is replaced with a safe placeholder
+        # that docker compose will resolve from .env at runtime.
+        from app.services.generate_service import is_secret_key, _SECRET_PLACEHOLDER
+        merged_env = {
+            k: (_SECRET_PLACEHOLDER if is_secret_key(k) else v)
+            for k, v in merged_env.items()
+        }
+        service["environment"] = merged_env
 
     return service
 
@@ -409,10 +421,18 @@ async def constructor_generate(body: ConstructorRequest):
                 zf.write(str(dockerfile_path), f"build/{slug}/Dockerfile")
 
         # .env.example
-        env_lines = ["# GosDocker Environment Variables", "# Generated Constructor Stack\n"]
+        from app.services.generate_service import is_secret_key, _SECRET_PLACEHOLDER
+        env_lines = ["# GosDocker Environment Variables", "# Generated Constructor Stack", "# Copy to .env and set real values; secrets are masked.\n"]
         for slug in resolved:
             manifest = manifests[slug].get("component", {})
-            for key, val in manifest.get("default_env", {}).items():
+            default_env = dict(manifest.get("default_env", {}) or {})
+            # Merge user env (user wins)
+            user_cfg = body.configs.get(slug) or {}
+            default_env.update(user_cfg.get("env") or {})
+            for key, val in default_env.items():
+                # Bug #6: mask secret values in .env.example
+                if is_secret_key(key):
+                    val = _SECRET_PLACEHOLDER
                 env_lines.append(f"{slug.upper()}_{key.upper()}={val}")
         zf.writestr(".env.example", "\n".join(env_lines))
 

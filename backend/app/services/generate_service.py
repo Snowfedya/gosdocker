@@ -1,8 +1,43 @@
+import re
 import zipfile
 import yaml
 from io import BytesIO
 from datetime import datetime
 from .template_service import TemplateService
+
+
+# Patterns that mark an env-var name as containing a secret. The regex is
+# intentionally broad-but-conservative: false positives are fine (TZ won't
+# match), false negatives leak real secrets to the user ZIP.
+_SECRET_PATTERN = re.compile(
+    r"(.*_)?("
+    r"PASSWORD|PASSWD|PASS"
+    r"|SECRET"
+    r"|TOKEN"
+    r"|API[_-]?KEY"
+    r"|PRIVATE[_-]?KEY"
+    r"|CREDENTIALS"
+    r"|AUTH"
+    r")(_.*)?$",
+    re.IGNORECASE,
+)
+# Placeholder that appears in .env.example and as a literal in compose
+# (docker compose will resolve ${VAR:-placeholder} from .env if present, or
+# fall back to the placeholder literal which is safe-by-default).
+_SECRET_PLACEHOLDER = "<set-me>"
+
+
+def is_secret_key(name: str) -> bool:
+    """Return True if an env-var name should be treated as a secret.
+
+    Heuristic: matches PASS/WORD/SECRET/TOKEN/API_KEY/PRIVATE_KEY/
+    CREDENTIALS/AUTH anywhere in the name, case-insensitive. Conservative
+    by design — over-masking is safe, under-masking leaks secrets.
+    """
+    if not name:
+        return False
+    return bool(_SECRET_PATTERN.match(name))
+
 
 class GenerateService:
     def __init__(self):
@@ -59,6 +94,17 @@ class GenerateService:
                 merged = dict(comp.default_env)
                 merged.update(user_env)  # user overrides take precedence
                 config["env"] = merged
+
+            # Sanitize: replace secret env-var VALUES with placeholder so the
+            # literal never reaches docker-compose.yml. The KEY is preserved
+            # (so users see what variable to set in .env). docker compose
+            # will pick up the real value from .env at runtime; the literal
+            # in compose is the safe placeholder. See Bug #6.
+            if config.get("env"):
+                config["env"] = {
+                    k: (_SECRET_PLACEHOLDER if is_secret_key(k) else v)
+                    for k, v in config["env"].items()
+                }
 
             # Render component template
             try:
@@ -138,14 +184,25 @@ class GenerateService:
             slug = comp.slug
             raw = configs.get(slug)
             if raw is None:
-                continue
+                config = {}
             elif hasattr(raw, "model_dump"):
                 config = raw.model_dump()
             else:
                 config = dict(raw)
             env = config.get("env", {})
+            # Merge default_env from component (same logic as _render_compose)
+            # so .env.example is complete — Bug #6: defaults must also be
+            # masked if they look like secrets.
+            if hasattr(comp, "default_env") and comp.default_env:
+                merged = dict(comp.default_env)
+                merged.update(env)
+                env = merged
 
             for key, value in env.items():
+                # Mask secret values in .env.example — Bug #6. Users copy
+                # .env.example to .env and fill in real values themselves.
+                if is_secret_key(key):
+                    value = _SECRET_PLACEHOLDER
                 lines.append(f"{slug.upper()}_{key.upper()}={value}")
 
         return "\n".join(lines)
