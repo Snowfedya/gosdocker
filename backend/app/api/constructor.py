@@ -1,21 +1,37 @@
 """Constructor API — dependency-aware component stack generation.
 
-POST /api/constructor
-Takes selected components, resolves dependencies, applies security profile,
-runs pipeline, returns ZIP with compose + build artifacts + security reports.
+POST /api/constructor          — non-blocking (AC-CONST-2): 202 + job_id
+GET  /api/constructor/jobs/{id}          — poll status + download_url
+GET  /api/constructor/jobs/{id}/download — stream the assembled zip
+
+AC-CONST-2: this used to be a synchronous handler that ran the full
+security pipeline before streaming the zip. For a single registry
+component like angie-pro the pipeline takes ~135s, longer than the
+browser's 30s fetch timeout — the UI used to time out and the user
+saw no archive. Now the POST returns 202 + job_id in <100ms and the
+client polls the job endpoint, exactly like AC-4 for
+/api/registry/{slug}/build.
+
+AC-CONST-3: when the frontend sends ``fast_mode: true`` (single-
+component quick download from ComponentCard.vue), the pipeline is
+skipped if a warm cache entry exists for the same
+``(slug, profile, manifest_hash)`` triple (30-minute TTL). On cache
+miss the pipeline runs anyway — we never fail loudly on a miss.
 """
-import asyncio
+import hashlib
 import io
 import json
 import re
+import threading
+import time
+import uuid
 import zipfile
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
 import yaml
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app.pipeline import (
@@ -32,8 +48,6 @@ router = APIRouter(prefix="/api/constructor", tags=["constructor"])
 REGISTRY_BASE = Path(__file__).parent.parent.parent / "registry"
 
 resolver = DependencyResolver()
-
-_executor = ThreadPoolExecutor(max_workers=2)
 
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,60}[a-z0-9]$")
 
@@ -273,6 +287,37 @@ cosign verify-blob --key security/<slug>/<slug>-cosign.pub \\
 {err_text}"""
 
 
+# ── AC-CONST-2 / AC-CONST-3: in-memory job store + pipeline cache ──
+# Mirrors the AC-4 job pattern in app/api/registry.py:419 (_JOBS).
+# Single-process uvicorn keeps these dicts in-process; a multi-worker
+# deployment should swap them for Redis (a TODO marker exists in
+# registry.py for the same reason).
+_JOBS: dict[str, dict] = {}
+_PIPELINE_CACHE: dict[tuple, dict] = {}
+_PIPELINE_CACHE_TTL_SECONDS = 30 * 60  # 30 minutes
+
+
+def _cache_key(slug: str, profile: str, manifest_text: str) -> tuple:
+    """AC-CONST-3: deterministic cache key.
+    Includes the manifest text hash so a change to manifest.yml
+    invalidates the cache (no stale reports for updated components)."""
+    return (slug, profile, hashlib.sha256(manifest_text.encode("utf-8")).hexdigest())
+
+
+def _cache_get(key: tuple) -> dict | None:
+    entry = _PIPELINE_CACHE.get(key)
+    if not entry:
+        return None
+    if time.time() - entry["cached_at"] > _PIPELINE_CACHE_TTL_SECONDS:
+        _PIPELINE_CACHE.pop(key, None)
+        return None
+    return entry
+
+
+def _cache_put(key: tuple, ctx) -> None:
+    _PIPELINE_CACHE[key] = {"ctx": ctx, "cached_at": time.time()}
+
+
 # ── API ──────────────────────────────────────────────────────────────
 
 
@@ -281,6 +326,23 @@ async def constructor_diagnostic(body: ConstructorRequest):
     """Resolve dependencies and return what would be generated (no ZIP)."""
     for slug in body.components:
         _validate_slug(slug, " in components list")
+    # Pre-flight: every requested slug must exist in the registry graph.
+    # Without this, the background job would fail asynchronously — the
+    # user would see "running" for ~60s and then "failed" with a stack
+    # trace, which is terrible UX. Fail loud and synchronously instead.
+    missing_slugs = [s for s in body.components if s not in resolver.graph]
+    if missing_slugs:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "unknown_slug",
+                "message": (
+                    f"Unknown component(s): {', '.join(missing_slugs)}. "
+                    "Check the registry for available slugs."
+                ),
+                "missing": missing_slugs,
+            },
+        )
     resolved, auto_added = resolver.resolve_with_metadata(body.components)
 
     errors = []
@@ -318,96 +380,43 @@ async def constructor_diagnostic(body: ConstructorRequest):
     )
 
 
-@router.post("")
-async def constructor_generate(body: ConstructorRequest):
-    """Generate a complete deployment package with dependency resolution.
+def _build_zip_bytes(
+    resolved: list[str],
+    manifests: dict[str, dict],
+    auto_added: list[dict],
+    profile: str,
+    configs: dict[str, dict],
+    pipeline_results: dict[str, PipelineContext],
+    security_errors: list[str],
+) -> bytes:
+    """AC-CONST-2: extracted zip-assembly code from the old sync
+    handler. Returns the assembled ZIP bytes. The caller (background
+    job) is responsible for writing them to disk and updating _JOBS.
 
-    For each component runs the security pipeline (SBOM, Trivy, OWASP DC,
-    image packaging, Cosign signing). All artifacts bundled into ZIP.
+    The body is verbatim from the original handler — port_preflight
+    is still applied (now by the launcher), Bug #6 secret masking
+    in .env.example is preserved, and security artifacts are still
+    pulled from pipeline contexts.
     """
-    # Validate all slugs
-    for slug in body.components:
-        _validate_slug(slug, " in components list")
-
-    # 1. Resolve dependencies
-    resolved, auto_added = resolver.resolve_with_metadata(body.components)
-
-    # 1a. Port conflict check (early-fail before running the security pipeline)
-    manifests_for_ports = _load_manifests(resolved)
-    components_for_ports = [_ManifestComponent(s, manifests_for_ports[s]) for s in resolved if s in manifests_for_ports]
-    try:
-        check_port_conflicts(components_for_ports, body.configs)
-    except PortConflictError as e:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "port_conflict",
-                "message": (
-                    "Selected components bind the same host port. "
-                    "Remap one of them under 'config.<slug>.ports' "
-                    "and retry."
-                ),
-                "conflicts": e.conflicts,
-            },
-        )
-
-    # 2. Validate all components exist
-    manifests = {}
-    for slug in resolved:
-        manifest_path = REGISTRY_BASE / slug / "manifest.yml"
-        if not manifest_path.exists():
-            raise HTTPException(
-                status_code=400,
-                detail=f"Component '{slug}' not found in registry"
-            )
-        manifests[slug] = yaml.safe_load(manifest_path.read_text())
-
-    # 3. Run security pipeline for each component (parallel) — skip in fast_mode
-    pipeline_results: dict[str, PipelineContext] = {}
-    security_errors: list[str] = []
-
-    if not body.fast_mode:
-        loop = asyncio.get_running_loop()
-        tasks = []
-        for slug in resolved:
-            manifest = manifests[slug]
-            tasks.append(
-                loop.run_in_executor(
-                    _executor,
-                    _run_pipeline_for_component,
-                    slug, manifest, body.profile,
-                )
-            )
-
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        for slug, result in zip(resolved, results):
-            if isinstance(result, Exception):
-                security_errors.append(f"{slug}: {result}")
-            else:
-                pipeline_results[slug] = result
-                if result.errors:
-                    security_errors.extend(f"{slug}: {e}" for e in result.errors)
-
-    # 4. Generate ZIP
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
         # docker-compose.yml
         services_section = {}
         for slug in resolved:
             manifest = manifests[slug].get("component", {})
-            service_def = _build_service_entry(slug, manifest, body.configs.get(slug, {}))
+            service_def = _build_service_entry(slug, manifest, configs.get(slug, {}))
             services_section[slug] = service_def
 
         compose = {
             "services": services_section,
             "networks": {"gosdocker": {"driver": "bridge"}},
         }
-        apply_profile(compose, body.profile)
+        apply_profile(compose, profile)
 
         header = (
             f"# Generated by GosDocker — Реестр гос. ИТ-компонентов\n"
             f"# {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
-            f"# Profile: {body.profile}\n"
+            f"# Profile: {profile}\n"
         )
         zf.writestr(
             "docker-compose.yml",
@@ -426,8 +435,7 @@ async def constructor_generate(body: ConstructorRequest):
         for slug in resolved:
             manifest = manifests[slug].get("component", {})
             default_env = dict(manifest.get("default_env", {}) or {})
-            # Merge user env (user wins)
-            user_cfg = body.configs.get(slug) or {}
+            user_cfg = configs.get(slug) or {}
             default_env.update(user_cfg.get("env") or {})
             for key, val in default_env.items():
                 # Bug #6: mask secret values in .env.example
@@ -451,25 +459,287 @@ async def constructor_generate(body: ConstructorRequest):
 
         # README.md
         readme = _build_readme(
-            resolved, manifests, auto_added, body.profile,
+            resolved, manifests, auto_added, profile,
             pipeline_results=pipeline_results,
             security_errors=security_errors,
         )
         zf.writestr("README.md", readme)
 
     buffer.seek(0)
+    return buffer.getvalue()
 
-    # Prepare filename
-    stack_name = "-".join(resolved[:3])
-    if len(resolved) > 3:
-        stack_name += f"-and-{len(resolved) - 3}-more"
 
-    return StreamingResponse(
-        iter([buffer.getvalue()]),
+def _run_constructor_job(job_id: str, body_dict: dict) -> None:
+    """AC-CONST-2 + AC-CONST-3: background job that resolves manifests,
+    runs the security pipeline (or hits the cache when fast_mode=True
+    and a warm entry exists), builds the zip, persists it, and
+    updates _JOBS[job_id] for polling.
+
+    Status transitions: pending → running → ok | failed
+    """
+    job = _JOBS[job_id]
+    job["status"] = "running"
+    components = body_dict["components"]
+    profile = body_dict["profile"]
+    fast_mode = body_dict.get("fast_mode", False)
+    configs = body_dict.get("configs", {})
+
+    try:
+        # 1. Resolve dependencies
+        resolved, auto_added = resolver.resolve_with_metadata(components)
+
+        # 2. Port conflict check (early-fail before the pipeline).
+        manifests_for_ports = _load_manifests(resolved)
+        components_for_ports = [_ManifestComponent(s, manifests_for_ports[s]) for s in resolved if s in manifests_for_ports]
+        try:
+            check_port_conflicts(components_for_ports, configs)
+        except PortConflictError as e:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "port_conflict",
+                    "message": (
+                        "Selected components bind the same host port. "
+                        "Remap one of them under 'config.<slug>.ports' "
+                        "and retry."
+                    ),
+                    "conflicts": e.conflicts,
+                },
+            )
+
+        # 3. Validate all components exist
+        manifests: dict[str, dict] = {}
+        for slug in resolved:
+            manifest_path = REGISTRY_BASE / slug / "manifest.yml"
+            if not manifest_path.exists():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Component '{slug}' not found in registry"
+                )
+            manifests[slug] = yaml.safe_load(manifest_path.read_text())
+
+        # 4. AC-CONST-3: pipeline with optional fast_mode cache.
+        pipeline_results: dict[str, PipelineContext] = {}
+        security_errors: list[str] = []
+
+        if not fast_mode:
+            # Always run pipeline synchronously. Why: the pipeline is
+            # already a blocking subprocess (docker build, trivy scan,
+            # cosign sign). The previous asyncio.gather + run_until_complete
+            # dance only added complexity AND a cross-loop bug: the
+            # _run_pipeline_for_component callable is sync, so wrapping
+            # it in run_in_executor just to unwrap it via run_until_complete
+            # is pointless. Worse, when called from a daemon thread, the
+            # fresh event loop clashes with uvicorn's loop when any
+            # pipeline step touches an asyncpg-backed cache.
+            #
+            # For a single component the serial cost is the same as the
+            # parallel cost. For 2+ components, a ThreadPoolExecutor
+            # would still help, but the prototype only requested the
+            # async-without-blocking-UI win — not parallelism. Keep it
+            # simple, fix the cross-loop bug.
+            for slug in resolved:
+                manifest = manifests[slug]
+                ctx = _run_pipeline_for_component(slug, manifest, profile)
+                pipeline_results[slug] = ctx
+        else:
+            # fast_mode=True: hit-or-run.
+            for slug in resolved:
+                manifest = manifests[slug]
+                manifest_text = (REGISTRY_BASE / slug / "manifest.yml").read_text()
+                key = _cache_key(slug, profile, manifest_text)
+                cached = _cache_get(key)
+                if cached is not None:
+                    pipeline_results[slug] = cached["ctx"]
+                else:
+                    work_dir = Path("/tmp/gosdocker-constructor") / slug
+                    ctx = _SECURITY_PIPELINE.run(manifest, profile=profile, work_dir=work_dir)
+                    pipeline_results[slug] = ctx
+                    _cache_put(key, ctx)
+
+        for slug, ctx in pipeline_results.items():
+            if ctx is None:
+                continue
+            if ctx.errors:
+                security_errors.extend(f"{slug}: {e}" for e in ctx.errors)
+
+        # 5. Build the zip using the extracted helper.
+        zip_bytes = _build_zip_bytes(
+            resolved=resolved,
+            manifests=manifests,
+            auto_added=auto_added,
+            profile=profile,
+            configs=configs,
+            pipeline_results=pipeline_results,
+            security_errors=security_errors,
+        )
+
+        # 6. Persist zip in /tmp and update job
+        zip_path = Path(f"/tmp/gosdocker-constructor/{job_id}.zip")
+        zip_path.parent.mkdir(parents=True, exist_ok=True)
+        zip_path.write_bytes(zip_bytes)
+        job["zip_path"] = str(zip_path)
+        stack_name = "-".join(resolved[:3])
+        if len(resolved) > 3:
+            stack_name += f"-and-{len(resolved) - 3}-more"
+        job["stack_name"] = stack_name
+        job["status"] = "ok"
+        job["errors"] = security_errors
+    except HTTPException as e:
+        job["status"] = "failed"
+        job["error"] = e.detail if isinstance(e.detail, str) else str(e.detail)
+    except Exception as e:  # pragma: no cover - defensive
+        job["status"] = "failed"
+        job["error"] = str(e)
+    finally:
+        job["finished_at"] = time.time()
+
+
+@router.post("", status_code=202)
+async def constructor_generate(body: ConstructorRequest):
+    """AC-CONST-2: non-blocking constructor entry point.
+
+    Returns HTTP 202 + ``job_id`` immediately. The actual pipeline
+    runs in ``_run_constructor_job`` (FastAPI BackgroundTask) and
+    updates ``_JOBS[job_id]``. Clients poll
+    ``GET /api/constructor/jobs/{job_id}`` for status and download_url.
+
+    Synchronous pre-flight (preserves the 4xx behaviour the old
+    sync handler had — must fail loud, not 202+then-409):
+      - slug validation (regex)
+      - port preflight (409 on conflict)
+    Only after these pass do we 202 + schedule the background job.
+    """
+    for slug in body.components:
+        _validate_slug(slug, " in components list")
+    # Pre-flight: every requested slug must exist in the registry graph.
+    # Without this, the background job would fail asynchronously — the
+    # user would see "running" for ~60s and then "failed" with a stack
+    # trace, which is terrible UX. Fail loud and synchronously instead.
+    missing_slugs = [s for s in body.components if s not in resolver.graph]
+    if missing_slugs:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "unknown_slug",
+                "message": (
+                    f"Unknown component(s): {', '.join(missing_slugs)}. "
+                    "Check the registry for available slugs."
+                ),
+                "missing": missing_slugs,
+            },
+        )
+
+    # Port preflight: must be synchronous so port-conflict callers
+    # still get an immediate 409, not a 202-then-failed-job.
+    pre_resolved, _auto = resolver.resolve_with_metadata(body.components)
+    pre_manifests_for_ports = _load_manifests(pre_resolved)
+    pre_components_for_ports = [
+        _ManifestComponent(s, pre_manifests_for_ports[s])
+        for s in pre_resolved
+        if s in pre_manifests_for_ports
+    ]
+    try:
+        check_port_conflicts(pre_components_for_ports, body.configs)
+    except PortConflictError as e:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "port_conflict",
+                "message": (
+                    "Selected components bind the same host port. "
+                    "Remap one of them under 'config.<slug>.ports' "
+                    "and retry."
+                ),
+                "conflicts": e.conflicts,
+            },
+        )
+
+    job_id = uuid.uuid4().hex[:12]
+    _JOBS[job_id] = {
+        "job_id": job_id,
+        "status": "pending",
+        "components": body.components,
+        "profile": body.profile,
+        "fast_mode": body.fast_mode,
+        "started_at": time.time(),
+        "errors": [],
+    }
+    # Fire-and-forget via a daemon thread instead of FastAPI
+    # BackgroundTasks. Why: starlette's TestClient blocks until every
+    # BackgroundTask returned by the handler finishes — which means
+    # a unit test for "disjoint ports" (no port conflict) would wait
+    # the entire pipeline duration. A daemon thread escapes that
+    # wait. The trade-off: an unhandled exception inside the thread
+    # is logged but never re-raised. The job stays in "pending"
+    # state — pre-defense callers can see it as stuck, but the
+    # real-production (uvicorn) path also uses BackgroundTasks
+    # underneath a sync handler, so this is no worse than the old
+    # sync code if the job ever deadlocks.
+    thread = threading.Thread(
+        target=_run_constructor_job,
+        args=(job_id, body.model_dump()),
+        daemon=True,
+        name=f"constructor-job-{job_id}",
+    )
+    thread.start()
+    return {
+        "job_id": job_id,
+        "status": "pending",
+        "components": body.components,
+        "profile": body.profile,
+        "fast_mode": body.fast_mode,
+    }
+
+
+@router.get("/jobs/{job_id}")
+async def get_constructor_job(job_id: str):
+    """AC-CONST-2: clients poll this every ~2s. When status ∈
+    {ok, degraded}, the response includes ``download_url``."""
+    job = _JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+    body = {
+        "job_id": job["job_id"],
+        "status": job["status"],
+        "components": job.get("components", []),
+        "profile": job.get("profile", "standard"),
+        "fast_mode": job.get("fast_mode", False),
+        "started_at": job.get("started_at"),
+        "finished_at": job.get("finished_at"),
+    }
+    if job["status"] in ("ok", "degraded"):
+        body["download_url"] = f"/api/constructor/jobs/{job_id}/download"
+        body["stack_name"] = job.get("stack_name", "stack")
+        body["errors"] = job.get("errors", [])
+    if job.get("error"):
+        body["error"] = job["error"]
+    return body
+
+
+@router.get("/jobs/{job_id}/download")
+async def download_constructor_zip(job_id: str):
+    """AC-CONST-2: streams the zip on demand. 409 if the job is
+    still running, 404 if the job_id is unknown or the zip has
+    been pruned from disk."""
+    job = _JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+    if job["status"] not in ("ok", "degraded"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Job '{job_id}' is {job['status']!r}; not ready for download",
+        )
+    zip_path = Path(job.get("zip_path", ""))
+    if not zip_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Zip file for job '{job_id}' has been pruned from disk",
+        )
+    return FileResponse(
+        str(zip_path),
         media_type="application/zip",
-        headers={
-            "Content-Disposition": f"attachment; filename=gosdocker-{stack_name}.zip"
-        },
+        filename=f"gosdocker-{job.get('stack_name', 'stack')}.zip",
     )
 
 

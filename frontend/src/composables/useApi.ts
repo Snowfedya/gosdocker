@@ -93,13 +93,59 @@ export function useApi() {
   async function constructorGenerate(
     req: ConstructorRequest
   ): Promise<Blob> {
-    const res = await fetch(`${API_BASE}/constructor`, {
+    // AC-CONST-2: backend now returns 202 + job_id. The real zip is
+    // built asynchronously, so we submit, poll, and download. The
+    // public type is still `Promise<Blob>` so call sites (ConstructorView,
+    // ComponentCard) don't have to change.
+    const submit = await fetch(`${API_BASE}/constructor`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(req),
     })
-    if (!res.ok) throw new Error('Ошибка генерации конструктора')
-    return res.blob()
+    if (!submit.ok) {
+      // 4xx is the synchronous pre-flight (slug validation, port
+      // conflict). The error body is JSON with {error, message, conflicts}.
+      let detail = ''
+      try {
+        const errBody = await submit.json()
+        detail = errBody?.detail?.message || errBody?.detail || ''
+        if (errBody?.detail?.error === 'port_conflict') {
+          // Re-throw as PortConflictError so existing UI handling works
+          // (ConstructorView.vue:90 has `if (e instanceof PortConflictError)`).
+          const { PortConflictError } = await import('./apiErrors')
+          throw new PortConflictError(detail || 'port_conflict', errBody.detail.conflicts || [])
+        }
+      } catch (_) {
+        // ignore — fall through
+      }
+      throw new Error(`Ошибка генерации конструктора${detail ? ': ' + detail : ''}`)
+    }
+    const { job_id: jobId } = await submit.json()
+
+    // Poll every 2s. Backoff would be a nice-to-have but 2s is
+    // fine for the prototype and keeps the code simple.
+    const POLL_INTERVAL_MS = 2000
+    const MAX_POLLS = 600  // 20 min safety cap
+    for (let i = 0; i < MAX_POLLS; i++) {
+      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS))
+      const poll = await fetch(`${API_BASE}/constructor/jobs/${jobId}`)
+      if (!poll.ok) {
+        throw new Error(`Ошибка опроса задачи: HTTP ${poll.status}`)
+      }
+      const job = await poll.json()
+      if (job.status === 'ok' || job.status === 'degraded') {
+        const dl = await fetch(job.download_url)
+        if (!dl.ok) {
+          throw new Error(`Ошибка загрузки архива: HTTP ${dl.status}`)
+        }
+        return await dl.blob()
+      }
+      if (job.status === 'failed') {
+        throw new Error(`Сборка не удалась: ${job.error || 'unknown error'}`)
+      }
+      // status === 'pending' | 'running' → keep polling
+    }
+    throw new Error('Превышено время ожидания сборки (20 мин)')
   }
 
   async function fetchProfiles(): Promise<SecurityProfile[]> {
