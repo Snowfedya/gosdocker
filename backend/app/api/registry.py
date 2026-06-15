@@ -1,10 +1,12 @@
 """Registry API — browse component manifests, build, and fetch security reports."""
 import json
 import re
+import time
+import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from fastapi.responses import FileResponse
 
 from app.pipeline import (
@@ -64,27 +66,35 @@ def _load_manifest(slug: str) -> dict | None:
     if not isinstance(manifest, dict):
         return None
 
-    # AC-2: merge image from DB so ScanStep can fallback on source image
+    # AC-2: merge image from DB so ScanStep can fallback on source image.
+    # Run in a dedicated thread to avoid clashes with any event loop
+    # that may already be running (pytest-asyncio, FastAPI handlers, etc).
     try:
         from app.database import async_session
         from sqlalchemy import select
         from app.models import Component
         import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
 
-        async def _fetch_image():
+        async def _fetch_image() -> str | None:
             async with async_session() as s:
-                r = await s.execute(select(Component.registry_url).where(Component.slug == slug))
-                v = r.scalar_one_or_none()
-                return v
-        try:
-            registry_url = loop.run_until_complete(_fetch_image())
-        except Exception:
-            registry_url = None
+                r = await s.execute(
+                    select(Component.registry_url).where(Component.slug == slug)
+                )
+                return r.scalar_one_or_none()
+
+        container: dict[str, Any] = {}
+
+        def _runner() -> None:
+            try:
+                container["url"] = asyncio.run(_fetch_image())
+            except Exception as e:  # pragma: no cover - defensive
+                container["error"] = str(e)
+
+        import threading
+        t = threading.Thread(target=_runner, daemon=True)
+        t.start()
+        t.join(timeout=5)
+        registry_url = container.get("url")
         if registry_url:
             comp = manifest.setdefault("component", {})
             comp.setdefault("image", registry_url)
@@ -361,36 +371,106 @@ async def get_manifest_raw(slug: str):
     )
 
 
-@router.post("/{slug}/build")
-async def run_pipeline(slug: str, profile: str = Query("standard", description="Security profile: basic, standard, or hardened")):
-    _validate_slug(slug)
-    """Run the security pipeline for a component and return report.
+# AC-4: in-memory job store. Keyed by job_id, holds status / report / timing.
+# Production deployment should swap this for Redis or a DB-backed queue;
+# the single-process uvicorn in this prototype keeps the model in-process.
+_JOBS: dict[str, dict[str, Any]] = {}
 
-    Builds the Docker image, scans with Trivy, runs OWASP Dependency-Check,
-    packages, signs with Cosign. Returns a structured security report.
+
+def _run_pipeline_job(slug: str, profile: str, job_id: str) -> None:
+    """Background job: run pipeline, save report, update job status.
+
+    AC-4: invoked by FastAPI BackgroundTasks, executes the previously
+    synchronous pipeline off the request thread. Updates ``_JOBS[job_id]``
+    with status transitions: pending → running → ok | degraded | failed.
     """
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    job = _JOBS[job_id]
+    job["status"] = "running"
     manifest = _load_manifest(slug)
     if not manifest:
-        raise HTTPException(status_code=404, detail=f"Component '{slug}' not found in registry")
+        job["status"] = "failed"
+        job["error"] = f"Component '{slug}' not found in registry"
+        job["finished_at"] = time.time()
+        return
 
-    from concurrent.futures import ThreadPoolExecutor
-    import asyncio
-
-    loop = asyncio.get_running_loop()
+    work_dir = Path("/tmp/gosdocker-constructor") / slug
     executor = ThreadPoolExecutor(max_workers=2)
 
-    def _run():
-        work_dir = Path("/tmp/gosdocker-constructor") / slug
+    def _run() -> Any:
         return _PIPELINE.run(manifest, profile=profile, work_dir=work_dir)
 
     try:
-        ctx = await loop.run_in_executor(executor, _run)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Pipeline failed: {e}")
+        loop = asyncio.new_event_loop()
+        try:
+            ctx = loop.run_until_complete(loop.run_in_executor(executor, _run))
+        finally:
+            loop.close()
+        report = _build_report_from_context(slug, profile, ctx.artifacts, ctx.errors)
+        _save_report_cache(slug, report)
+        job["status"] = report["status"]
+        job["report"] = report
+    except Exception as e:  # pragma: no cover - defensive
+        job["status"] = "failed"
+        job["error"] = str(e)
+    finally:
+        job["finished_at"] = time.time()
 
-    report = _build_report_from_context(slug, profile, ctx.artifacts, ctx.errors)
-    _save_report_cache(slug, report)
-    return report
+
+@router.post("/{slug}/build", status_code=202)
+async def run_pipeline(
+    slug: str,
+    background: BackgroundTasks,
+    profile: str = Query("standard", description="Security profile: basic, standard, or hardened"),
+):
+    _validate_slug(slug)
+    """Run the security pipeline for a component asynchronously.
+
+    AC-4: returns HTTP 202 + job_id immediately; the actual pipeline
+    runs in a FastAPI BackgroundTask and updates ``_JOBS[job_id]``.
+    Clients poll ``GET /api/registry/{slug}/jobs/{job_id}`` for status.
+    """
+    if not _load_manifest(slug):
+        raise HTTPException(status_code=404, detail=f"Component '{slug}' not found in registry")
+
+    job_id = uuid.uuid4().hex[:12]
+    _JOBS[job_id] = {
+        "slug": slug,
+        "job_id": job_id,
+        "profile": profile,
+        "status": "pending",
+        "started_at": time.time(),
+    }
+    background.add_task(_run_pipeline_job, slug, profile, job_id)
+    return {"job_id": job_id, "status": "pending", "slug": slug, "profile": profile}
+
+
+@router.get("/{slug}/jobs/{job_id}")
+async def get_job(slug: str, job_id: str):
+    """Return the current status of a pipeline job.
+
+    AC-4: UI polls this every 2s after POST /build; when status ∈
+    {ok, degraded, failed}, the ``report`` field is included and the
+    client can stop polling.
+    """
+    job = _JOBS.get(job_id)
+    if not job or job.get("slug") != slug:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found for '{slug}'")
+    response = {
+        "job_id": job["job_id"],
+        "slug": job["slug"],
+        "profile": job.get("profile", "standard"),
+        "status": job["status"],
+        "started_at": job.get("started_at"),
+        "finished_at": job.get("finished_at"),
+    }
+    if job["status"] in ("ok", "degraded", "failed") and "report" in job:
+        response["report"] = job["report"]
+    if job.get("error"):
+        response["error"] = job["error"]
+    return response
 
 
 @router.get("/{slug}/reports")

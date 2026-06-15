@@ -149,27 +149,50 @@ def _load_cache(slug: str):
 # ─────────────────────────────────────────────────────────────
 
 
-def test_build_returns_202_with_job_id():
-    """AC-4: POST /build is async, returns 202 + job_id."""
+def test_build_returns_202_with_job_id(monkeypatch):
+    """AC-4: POST /build is async, returns 202 + job_id; does not block on pipeline."""
     from fastapi.testclient import TestClient
     from app.main import app
+    from app.api import registry as registry_mod
+
+    # AC-4: stub the heavy pipeline so the test runs in milliseconds
+    monkeypatch.setattr(registry_mod, "_run_pipeline_job",
+                        lambda slug, profile, job_id: None)
     client = TestClient(app)
     r = client.post("/api/registry/angie-pro/build?profile=standard")
     assert r.status_code == 202
     body = r.json()
     assert "job_id" in body
-    assert body["status"] in ("pending", "running")
+    assert body["status"] == "pending"
+    assert body["slug"] == "angie-pro"
 
 
-def test_jobs_endpoint_returns_status():
-    """AC-4: GET /jobs/<job_id> returns current job status."""
+def test_jobs_endpoint_returns_status(monkeypatch):
+    """AC-4: GET /jobs/<job_id> returns current job status (pending/running/ok/degraded/failed)."""
     from fastapi.testclient import TestClient
     from app.main import app
+    from app.api import registry as registry_mod
+    import time as _time
+
+    monkeypatch.setattr(registry_mod, "_run_pipeline_job",
+                        lambda slug, profile, job_id: None)
     client = TestClient(app)
     r = client.post("/api/registry/angie-pro/build?profile=standard")
     assert r.status_code == 202
     job_id = r.json()["job_id"]
     r2 = client.get(f"/api/registry/angie-pro/jobs/{job_id}")
     assert r2.status_code == 200
-    assert r2.json()["job_id"] == job_id
-    assert r2.json()["status"] in ("pending", "running", "ok", "degraded", "failed")
+    body = r2.json()
+    assert body["job_id"] == job_id
+    assert body["status"] == "pending"
+    assert body["slug"] == "angie-pro"
+    assert body["profile"] == "standard"
+
+
+def test_jobs_endpoint_404_for_unknown_job():
+    """AC-4: GET /jobs/<id> returns 404 for unknown job_id."""
+    from fastapi.testclient import TestClient
+    from app.main import app
+    client = TestClient(app)
+    r = client.get("/api/registry/angie-pro/jobs/nonexistent_id")
+    assert r.status_code == 404

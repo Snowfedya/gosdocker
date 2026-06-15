@@ -27,6 +27,30 @@ def _path(suffix: str) -> str:
     return f"{API_PREFIX}{suffix}"
 
 
+# AC-4: helper to start a build and wait for the background job to
+# complete. Polls GET /registry/{slug}/jobs/{job_id} until status is
+# terminal, then returns the report dict.
+def _build_and_wait(c: httpx.Client, slug: str, profile: str = "standard",
+                    poll_interval: float = 2.0, max_wait: float = 120.0):  # type: ignore[no-untyped-def]
+    r = c.post(_path(f"/registry/{slug}/build?profile={profile}"))
+    assert r.status_code == 202, f"expected 202, got {r.status_code}: {r.text}"
+    body = r.json()
+    job_id = body["job_id"]
+    deadline = time.time() + max_wait
+    last_status = None
+    while time.time() < deadline:
+        r2 = c.get(_path(f"/registry/{slug}/jobs/{job_id}"))
+        if r2.status_code == 200:
+            j = r2.json()
+            last_status = j["status"]
+            if last_status in ("ok", "degraded", "failed"):
+                if "report" in j:
+                    return j["report"]
+                pytest.fail(f"job {job_id} finished with status={last_status} but no report; error={j.get('error')}")
+        time.sleep(poll_interval)
+    pytest.fail(f"job {job_id} did not finish within {max_wait}s; last_status={last_status}")
+
+
 # --------------- fixtures ---------------
 
 @pytest.fixture(scope="module")
@@ -116,26 +140,29 @@ class TestBuildEndpoint:
             assert r.status_code == 404
 
     def test_build_default_profile(self):
-        """POST with default profile succeeds and returns report."""
+        """POST with default profile returns 202 + job_id (async build, AC-4)."""
         with client() as c:
             r = c.post(_path(f"/registry/{KNOWN_SLUG}/build?profile=standard"))
-            assert r.status_code == 200
+            assert r.status_code == 202
             data = r.json()
-            self._assert_report_shape(data)
+            assert "job_id" in data
+            assert data["status"] in ("pending", "running")
 
     def test_build_basic_profile(self):
+        """AC-4: basic profile starts an async build, returns 202 + job_id."""
         with client() as c:
             r = c.post(_path(f"/registry/{KNOWN_SLUG}/build?profile=basic"))
-            assert r.status_code == 200
+            assert r.status_code == 202
             data = r.json()
-            self._assert_report_shape(data)
+            assert "job_id" in data
 
     def test_build_hardened_profile(self):
+        """AC-4: hardened profile starts an async build, returns 202 + job_id."""
         with client() as c:
             r = c.post(_path(f"/registry/{KNOWN_SLUG}/build?profile=hardened"))
-            assert r.status_code == 200
+            assert r.status_code == 202
             data = r.json()
-            self._assert_report_shape(data)
+            assert "job_id" in data
 
     def _assert_report_shape(self, data):
         assert "slug" in data
@@ -172,37 +199,33 @@ class TestBuildEndpoint:
 
 class TestWorkflow:
     def test_build_then_reports(self):
-        """Build → GET reports returns the cached report."""
+        """Build → GET reports returns the cached report. AC-4: polls job."""
         with client() as c:
-            r1 = c.post(_path(f"/registry/{KNOWN_SLUG}/build?profile=standard"))
-            assert r1.status_code == 200
-            build_data = r1.json()
+            report = _build_and_wait(c, KNOWN_SLUG, "standard", max_wait=300)
 
             r2 = c.get(_path(f"/registry/{KNOWN_SLUG}/reports"))
             assert r2.status_code == 200
             report_data = r2.json()
 
-            assert report_data["slug"] == build_data["slug"]
-            assert report_data["profile"] == build_data["profile"]
+            assert report_data["slug"] == report["slug"]
+            assert report_data["profile"] == report["profile"]
 
     def test_build_twice_refreshes(self):
-        """Second build with different profile refreshes the report."""
+        """Second build with different profile refreshes the report. AC-4: async."""
         with client() as c:
-            r1 = c.post(_path(f"/registry/{KNOWN_SLUG}/build?profile=basic"))
-            assert r1.status_code == 200
-            p1 = r1.json()["profile"]
+            r1 = _build_and_wait(c, KNOWN_SLUG, "basic", max_wait=300)
+            p1 = r1["profile"]
 
-            r2 = c.post(_path(f"/registry/{KNOWN_SLUG}/build?profile=hardened"))
-            assert r2.status_code == 200
-            p2 = r2.json()["profile"]
+            r2 = _build_and_wait(c, KNOWN_SLUG, "hardened", max_wait=300)
+            p2 = r2["profile"]
 
             assert p1 == "basic"
             assert p2 == "hardened"
 
     def test_reports_after_second_build(self):
-        """Reports returns the most recent build's profile."""
+        """Reports returns the most recent build's profile. AC-4: async."""
         with client() as c:
-            c.post(_path(f"/registry/{KNOWN_SLUG}/build?profile=hardened"))
+            _build_and_wait(c, KNOWN_SLUG, "hardened", max_wait=300)
             r = c.get(_path(f"/registry/{KNOWN_SLUG}/reports"))
             assert r.status_code == 200
             assert r.json()["profile"] == "hardened"
@@ -212,13 +235,13 @@ class TestWorkflow:
 
 class TestEdgeCases:
     def test_empty_profile_fallback(self):
-        """No profile param should use default (standard)."""
+        """No profile param should use default (standard). AC-4: returns 202."""
         with client() as c:
             r = c.post(_path(f"/registry/{KNOWN_SLUG}/build"))
-            assert r.status_code == 200
+            assert r.status_code == 202
 
     def test_invalid_profile(self):
-        """Unknown profile should not crash — returns 200 (graceful) or 400."""
+        """Unknown profile should not crash — AC-4 returns 202; pipeline handles it."""
         with client() as c:
             r = c.post(_path(f"/registry/{KNOWN_SLUG}/build?profile=nonexistent"))
-            assert r.status_code in (200, 400, 422)
+            assert r.status_code in (202, 422)
