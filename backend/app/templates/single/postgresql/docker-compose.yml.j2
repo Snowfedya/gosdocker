@@ -1,6 +1,5 @@
   postgresql:
     image: {{ registry_url or 'dh-mirror.gitverse.ru/postgres:15-alpine' }}
-    container_name: postgresql
     restart: unless-stopped
 {% if config.get('ports') %}
     ports:

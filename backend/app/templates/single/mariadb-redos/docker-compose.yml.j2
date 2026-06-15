@@ -1,7 +1,12 @@
 mariadb-redos:
     image: {{ registry_url or 'dh-mirror.gitverse.ru/library/mariadb:10.6' }}
-    container_name: mariadb-redos
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
 {% if config.get('ports') %}
     ports:
 {% for ext, intv in config['ports'].items() %}

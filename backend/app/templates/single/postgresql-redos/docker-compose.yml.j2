@@ -1,6 +1,5 @@
   postgresql-redos:
     image: {{ registry_url or 'registry.red-soft.ru/ubi8/postgresql-17' }}
-    container_name: postgresql-redos
     restart: unless-stopped
 {% if config.get('ports') %}
     ports:

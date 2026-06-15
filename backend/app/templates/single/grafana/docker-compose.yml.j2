@@ -1,7 +1,12 @@
   grafana:
     image: {{ registry_url or 'dh-mirror.gitverse.ru/grafana/grafana' }}
-    container_name: grafana
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
 {% if config.get('ports') %}
     ports:
 {% for ext, intv in config['ports'].items() %}

@@ -1,7 +1,12 @@
 redis:
     image: {{ registry_url or 'dh-mirror.gitverse.ru/redis:7-alpine' }}
-    container_name: redis
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
 {% if config.get('ports') %}
     ports:
 {% for ext, intv in config['ports'].items() %}

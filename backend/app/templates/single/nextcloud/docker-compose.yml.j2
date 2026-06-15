@@ -1,6 +1,5 @@
   nextcloud:
     image: {{ registry_url or 'dh-mirror.gitverse.ru/library/nextcloud' }}
-    container_name: nextcloud
     restart: unless-stopped
 {% if config.get('ports') %}
     ports:

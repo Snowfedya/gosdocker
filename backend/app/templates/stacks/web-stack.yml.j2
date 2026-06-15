@@ -5,7 +5,6 @@
 services:
   angie:
     image: {{ components[0].registry_url if components else 'dh-mirror.gitverse.ru/riftbit/angie' }}
-    container_name: angie
     restart: unless-stopped
 {% if configs.get('angie-pro', {}).get('ports') %}
     ports:
@@ -18,7 +17,6 @@ services:
 
   postgresql-redos:
     image: {{ components[1].registry_url if (components | length) > 1 else 'registry.red-soft.ru/ubi8/postgresql-17' }}
-    container_name: postgresql-redos
     restart: unless-stopped
 {% if configs.get('postgresql-redos', {}).get('ports') %}
     ports:

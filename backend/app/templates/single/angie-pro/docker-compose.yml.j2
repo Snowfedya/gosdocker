@@ -1,7 +1,12 @@
   angie-pro:
     image: {{ registry_url or 'dh-mirror.gitverse.ru/riftbit/angie' }}
-    container_name: angie-pro
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost/"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
 {% if config.get('ports') %}
     ports:
 {% for ext, intv in config['ports'].items() %}
