@@ -105,20 +105,28 @@ export function useApi() {
     if (!submit.ok) {
       // 4xx is the synchronous pre-flight (slug validation, port
       // conflict). The error body is JSON with {error, message, conflicts}.
-      let detail = ''
       try {
         const errBody = await submit.json()
-        detail = errBody?.detail?.message || errBody?.detail || ''
-        if (errBody?.detail?.error === 'port_conflict') {
+        const detailObj = errBody?.detail
+        if (detailObj?.error === 'port_conflict') {
           // Re-throw as PortConflictError so existing UI handling works
           // (ConstructorView.vue:90 has `if (e instanceof PortConflictError)`).
           const { PortConflictError } = await import('./apiErrors')
-          throw new PortConflictError(detail || 'port_conflict', errBody.detail.conflicts || [])
+          // Signature: (status, conflicts, message?)
+          throw new PortConflictError(
+            submit.status,
+            detailObj.conflicts || [],
+            detailObj.message || 'port_conflict',
+          )
         }
-      } catch (_) {
-        // ignore — fall through
+        const detailMsg = detailObj?.message || detailObj || 'ошибка конструктора'
+        throw new Error(`Ошибка генерации конструктора: ${detailMsg}`)
+      } catch (e) {
+        if (e instanceof Error && e.name === 'PortConflictError') throw e
+        // re-throw parsed errors; if it was a parse failure, fall through
+        if (e instanceof Error && e.message.startsWith('Ошибка генерации')) throw e
+        throw new Error(`Ошибка генерации конструктора: HTTP ${submit.status}`)
       }
-      throw new Error(`Ошибка генерации конструктора${detail ? ': ' + detail : ''}`)
     }
     const { job_id: jobId } = await submit.json()
 

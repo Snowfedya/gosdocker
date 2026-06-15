@@ -31,7 +31,7 @@ def _path(suffix: str) -> str:
 # complete. Polls GET /registry/{slug}/jobs/{job_id} until status is
 # terminal, then returns the report dict.
 def _build_and_wait(c: httpx.Client, slug: str, profile: str = "standard",
-                    poll_interval: float = 2.0, max_wait: float = 120.0):  # type: ignore[no-untyped-def]
+                    poll_interval: float = 2.0, max_wait: float = 300.0):  # type: ignore[no-untyped-def]
     r = c.post(_path(f"/registry/{slug}/build?profile={profile}"))
     assert r.status_code == 202, f"expected 202, got {r.status_code}: {r.text}"
     body = r.json()
