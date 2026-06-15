@@ -5,6 +5,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from .api import categories_router, components_router, stacks_router, generate_router, registry_router, constructor_router
 from .database import get_db
+from .middleware import StaleConnectionRetryMiddleware
 
 logging.basicConfig(
     level=logging.INFO,
@@ -17,6 +18,7 @@ app = FastAPI(
     version="1.0.0"
 )
 
+app.add_middleware(StaleConnectionRetryMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[

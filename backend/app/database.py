@@ -27,5 +27,15 @@ async_session = async_sessionmaker(
 )
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    async with async_session() as session:
+    # AC-INF-2: pre_ping=True catches dead conns on *checkout*, but a conn
+    # already checked out can die mid-request (db Recreate). The
+    # request-level retry lives in app.middleware.db_retry (StaleConnRetry)
+    # — here we just hand out a session and let exceptions propagate.
+    session = async_session()
+    try:
         yield session
+    finally:
+        try:
+            await session.close()
+        except Exception:
+            pass
