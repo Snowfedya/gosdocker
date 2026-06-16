@@ -58,6 +58,8 @@ function toggleGroup(type: string) {
 
     <div v-if="groups.length === 0" class="text-center py-6 text-gray-400 dark:text-slate-500">
       <p class="text-sm">Нет данных о зависимостях</p>
+      <p class="text-xs mt-1">Это нормально для single-binary образов (nginx, busybox, alpine).<br>
+        Для образов с пакетами (postgres, python) SBOM будет содержать десятки компонентов.</p>
     </div>
   </div>
 </template>

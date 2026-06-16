@@ -116,7 +116,19 @@ class DependencyCheckStep(Step):
             self._write_placeholder(ctx, work_dir, slug)
 
     def _write_placeholder(self, ctx: PipelineContext, work_dir: Path, slug: str) -> None:
-        """Write a placeholder report when OWASP DC is unavailable."""
+        """Write a placeholder report when OWASP DC is unavailable.
+
+        Bug #12: previously this function wrote the placeholder JSON
+        to disk but never registered it in ``ctx.artifacts``. The
+        report builder then saw ``owasp_report: None``, skipped
+        parsing, and the OWASP panel on the security page rendered
+        as missing (no deps scanned, no vulnerabilities counted) —
+        even though the file existed on disk.
+
+        Fix: register the placeholder path so the downstream parser
+        can produce a coherent (zero-filled but present) summary, and
+        the UI no longer shows a phantom 'no OWASP result' state.
+        """
         placeholder = work_dir / f"{slug}-dependency-check.json"
         placeholder.write_text(json.dumps({
             "report": slug,
@@ -128,4 +140,5 @@ class DependencyCheckStep(Step):
                     "--scan /src --format JSON --out /out",
         }, indent=2))
         placeholder.chmod(0o644)
+        ctx.add_artifact("owasp_report", str(placeholder))  # Bug #12 fix
         ctx.log(f"OWASP DC placeholder: {placeholder.name}")
