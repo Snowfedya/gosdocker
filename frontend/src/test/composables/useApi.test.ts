@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { useApi } from '../../composables/useApi'
 
 const mockFetch = vi.fn()
@@ -69,28 +69,7 @@ describe('useApi', () => {
     })
   })
 
-  describe('buildComponent', () => {
-    it('posts to build endpoint with profile', async () => {
-      mockFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ slug: 'nginx', status: 'ok' }) })
-
-      const { buildComponent } = useApi()
-      const result = await buildComponent('nginx', 'standard')
-
-      expect(mockFetch).toHaveBeenCalledWith('/api/registry/nginx/build?profile=standard', { method: 'POST' })
-      expect(result).toEqual({ slug: 'nginx', status: 'ok' })
-    })
-
-    it('uses default profile when not specified', async () => {
-      mockFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({}) })
-
-      const { buildComponent } = useApi()
-      await buildComponent('nginx')
-
-      expect(mockFetch).toHaveBeenCalledWith('/api/registry/nginx/build?profile=standard', { method: 'POST' })
-    })
-  })
-
-  describe('generateStack', () => {
+  describe('buildComponent (AC-4 async scan)', () => {
     it('posts config and returns blob', async () => {
       const blob = new Blob()
       mockFetch.mockResolvedValueOnce({ ok: true, blob: () => Promise.resolve(blob) })
@@ -163,6 +142,101 @@ describe('useApi', () => {
 
       expect(mockFetch).toHaveBeenCalledWith('/api/registry/nginx/reports')
       expect(result).toEqual({ slug: 'nginx' })
+    })
+  })
+
+  describe('buildComponent (AC-4 async scan)', () => {
+    // AC-4: buildComponent must submit-then-poll-then-return, not
+    // return the {job_id, status:'pending'} envelope as a report.
+    // The old code did `return res.json()` directly, which caused
+    // SecuritySummary to render `pending` as if it were a finished
+    // report (no sbom/trivy/owasp/security_score fields). The new
+    // contract: poll every ~2s until the job reaches {ok, degraded},
+    // then return job.report. On `failed`, throw the job's error.
+
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('submits, polls, and returns job.report when status becomes ok', async () => {
+      vi.useFakeTimers()
+      const fakeReport = {
+        slug: 'angie-pro',
+        profile: 'standard',
+        sbom: { packages: [] },
+        trivy: { vulnerabilities: [] },
+        owasp: { score: 95 },
+        security_score: 95,
+      }
+      // 1) submit returns 202 + job_id
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ job_id: 'abc123', slug: 'angie-pro', profile: 'standard', status: 'pending' }),
+      })
+      // 2) first poll: still running
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ job_id: 'abc123', status: 'running' }),
+      })
+      // 3) second poll: ok with report
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ job_id: 'abc123', status: 'ok', report: fakeReport }),
+      })
+
+      const { buildComponent } = useApi()
+      const resultPromise = buildComponent('angie-pro', 'standard')
+
+      // advance through the two setTimeout(2000) waits inside the poll loop
+      await vi.advanceTimersByTimeAsync(2000)
+      await vi.advanceTimersByTimeAsync(2000)
+
+      const result = await resultPromise
+
+      // First call: POST submit
+      expect(mockFetch.mock.calls[0][0]).toBe('/api/registry/angie-pro/build?profile=standard')
+      expect(mockFetch.mock.calls[0][1].method).toBe('POST')
+      // Second + third calls: GET poll
+      expect(mockFetch.mock.calls[1][0]).toBe('/api/registry/angie-pro/jobs/abc123')
+      expect(mockFetch.mock.calls[2][0]).toBe('/api/registry/angie-pro/jobs/abc123')
+      // Returned value is the inner report, NOT the job envelope
+      expect(result).toEqual(fakeReport)
+      expect((result as any).status).toBeUndefined()
+    })
+
+    it('throws on failed status with backend error message', async () => {
+      vi.useFakeTimers()
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ job_id: 'fail1', status: 'pending' }),
+      })
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ job_id: 'fail1', status: 'failed', error: 'docker pull failed: 404' }),
+      })
+
+      const { buildComponent } = useApi()
+      const resultPromise = buildComponent('angie-pro', 'standard')
+      // Attach a no-op rejection handler before advancing timers so
+      // the test framework's unhandled-rejection tracker doesn't
+      // trip on the microtask that resolves the throw. The actual
+      // assertion below is what validates the error.
+      resultPromise.catch(() => {})
+      await vi.advanceTimersByTimeAsync(2000)
+      await expect(resultPromise).rejects.toThrow('Сканирование не удалось: docker pull failed: 404')
+    })
+
+    it('throws with HTTP status on submit pre-flight 4xx', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        json: () => Promise.resolve({ detail: "Component 'bogus' not found in registry" }),
+      })
+
+      const { buildComponent } = useApi()
+      await expect(buildComponent('bogus', 'standard')).rejects.toThrow(
+        "Ошибка запуска проверки: Component 'bogus' not found in registry",
+      )
     })
   })
 })

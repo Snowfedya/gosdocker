@@ -165,11 +165,46 @@ export function useApi() {
   // --- Registry Build + Reports API ---
 
   async function buildComponent(slug: string, profile: string = 'standard'): Promise<SecurityReport> {
-    const res = await fetch(`${API_BASE}/registry/${slug}/build?profile=${encodeURIComponent(profile)}`, {
+    // AC-4 mirror of constructorGenerate: backend now returns 202 +
+    // job_id from POST /registry/{slug}/build and the real pipeline
+    // runs asynchronously, so we submit, poll, and return the report
+    // when the job reaches {ok, degraded}. On `failed` we surface
+    // the job's error message; on `pending`/`running` we keep polling.
+    const submit = await fetch(`${API_BASE}/registry/${slug}/build?profile=${encodeURIComponent(profile)}`, {
       method: 'POST',
     })
-    if (!res.ok) throw new Error('Ошибка запуска проверки безопасности')
-    return res.json()
+    if (!submit.ok) {
+      // 4xx synchronous pre-flight (component not in registry, missing
+      // manifest). The error body is JSON with {detail: "..."}.
+      try {
+        const errBody = await submit.json()
+        throw new Error(`Ошибка запуска проверки: ${errBody?.detail || `HTTP ${submit.status}`}`)
+      } catch (e) {
+        if (e instanceof Error && e.message.startsWith('Ошибка запуска')) throw e
+        throw new Error(`Ошибка запуска проверки безопасности: HTTP ${submit.status}`)
+      }
+    }
+    const { job_id: jobId } = await submit.json()
+
+    const POLL_INTERVAL_MS = 2000
+    const MAX_POLLS = 600  // 20 min safety cap — matches constructorGenerate
+    for (let i = 0; i < MAX_POLLS; i++) {
+      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS))
+      const poll = await fetch(`${API_BASE}/registry/${slug}/jobs/${jobId}`)
+      if (!poll.ok) {
+        throw new Error(`Ошибка опроса задачи сканирования: HTTP ${poll.status}`)
+      }
+      const job = await poll.json()
+      if (job.status === 'ok' || job.status === 'degraded') {
+        // Backend stores the report at job['report'] when finished
+        return job.report as SecurityReport
+      }
+      if (job.status === 'failed') {
+        throw new Error(`Сканирование не удалось: ${job.error || 'unknown error'}`)
+      }
+      // status === 'pending' | 'running' → keep polling
+    }
+    throw new Error('Превышено время ожидания сканирования (20 мин)')
   }
 
   async function fetchReports(slug: string): Promise<SecurityReport> {
