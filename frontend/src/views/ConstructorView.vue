@@ -63,7 +63,7 @@ async function runDiagnostic() {
   }
 }
 
-async function generate() {
+async function generate(withOwasp: boolean = true) {
   const selectedSlugs = Object.entries(selected.value)
     .filter(([_, v]) => v)
     .map(([k]) => k)
@@ -77,13 +77,15 @@ async function generate() {
     const blob = await constructorGenerate({
       components: selectedSlugs,
       profile: selectedProfile.value,
-      fast_mode: true,
+      fast_mode: withOwasp,   // AC-CONST-3: warm cache for the security path
+      with_owasp: withOwasp,  // AC-CONST-4: full security vs fast path
       configs: {},
     })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `gosdocker-stack-${selectedSlugs[0]}.zip`
+    const tag = withOwasp ? '' : '-fast'
+    a.download = `gosdocker-stack-${selectedSlugs[0]}${tag}.zip`
     a.click()
     URL.revokeObjectURL(url)
   } catch (e) {
@@ -231,13 +233,25 @@ const categoryLabels: Record<string, string> = {
               <AppIcon name="check-circle" class="w-4 h-4" />
               Проверить
             </button>
+            <!-- AC-CONST-4: fast path — only build + assemble, no OWASP / Trivy / Cosign. -->
             <button
-              @click="generate"
+              @click="generate(false)"
               :disabled="selectedCount === 0 || generating"
+              title="Скачать docker-compose.yml + Dockerfile'ы без проверки безопасности. Готово за секунды."
               class="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 disabled:opacity-40 transition shadow-md ring-1 ring-primary-500/30"
             >
               <AppIcon :name="generating ? 'refresh' : 'download'" class="w-4 h-4" :class="generating ? 'animate-spin' : ''" />
-              {{ generating ? 'Генерация...' : 'Сгенерировать и скачать' }}
+              {{ generating ? 'Генерация...' : 'Скачать без проверки' }}
+            </button>
+            <!-- AC-CONST-4: full security path — SBOM, Trivy, OWASP DC, Cosign. ~3 min. -->
+            <button
+              @click="generate(true)"
+              :disabled="selectedCount === 0 || generating"
+              title="Скачать с SBOM, Trivy-сканом, OWASP Dependency-Check и подписью Cosign. Занимает ~3 минуты."
+              class="w-full inline-flex items-center justify-center gap-2 px-4 py-2 bg-white dark:bg-slate-700 border border-gray-300 dark:border-slate-600 text-gray-700 dark:text-slate-300 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-slate-600 disabled:opacity-40 transition"
+            >
+              <AppIcon name="shield" class="w-4 h-4" />
+              Сгенерировать с проверкой
             </button>
           </div>
 

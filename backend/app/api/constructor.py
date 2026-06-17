@@ -72,12 +72,20 @@ _SECURITY_PIPELINE = Pipeline([
     RegisterStep(),
 ])
 
+# AC-CONST-4: fast pipeline — build + package only. No OWASP / Trivy / Cosign.
+# Used when the user explicitly opts out via with_owasp=False ("Скачать без проверки").
+_FAST_PIPELINE = Pipeline([
+    BuildStep(),
+    PackageStep(),
+])
+
 
 class ConstructorRequest(BaseModel):
     components: list[str]
     profile: str = "standard"
     configs: dict[str, dict] = {}
-    fast_mode: bool = False  # Skip security pipeline, generate compose only
+    fast_mode: bool = False  # AC-CONST-3: cache hit-or-run for warm entries
+    with_owasp: bool = True  # AC-CONST-4: full security pipeline (default)
 
     class Config:
         json_schema_extra = {
@@ -85,6 +93,7 @@ class ConstructorRequest(BaseModel):
                 "components": ["nginx", "nextcloud"],
                 "profile": "standard",
                 "configs": {"nginx": {"ports": {"80": 80}}},
+                "with_owasp": True,
             }
         }
 
@@ -215,8 +224,11 @@ def _build_readme(
     profile: str,
     pipeline_results: dict[str, PipelineContext] | None = None,
     security_errors: list[str] | None = None,
+    with_owasp: bool = True,  # AC-CONST-4
 ) -> str:
-    """Build README.md with component list and security report summary."""
+    """Build README.md with component list and security report summary.
+    AC-CONST-4: in fast mode (with_owasp=False) the security section is
+    replaced with a warning that no security verification was run."""
     comp_lines = []
     for slug in resolved:
         m = manifests[slug].get("component", {})
@@ -249,6 +261,18 @@ def _build_readme(
                 sec_lines.extend(art_list)
 
     sec_text = "\n".join(sec_lines) if sec_lines else "Артефакты не сгенерированы."
+
+    # AC-CONST-4: explicit warning when the user opted out of OWASP.
+    fast_mode_warning = ""
+    if not with_owasp:
+        fast_mode_warning = (
+            "\n## ⚠️ Режим без проверки безопасности\n\n"
+            "Этот стек сгенерирован в быстром режиме (`with_owasp: false`).\n"
+            "**Проверка безопасности НЕ выполнялась**: SBOM (CycloneDX), Trivy, "
+            "OWASP Dependency-Check и подпись Cosign отсутствуют. "
+            "Для продакшн-развёртывания в государственных учреждениях "
+            "пересоберите стек с `with_owasp: true`.\n"
+        )
 
     err_text = ""
     if security_errors:
@@ -294,7 +318,7 @@ cosign verify-blob --key security/<slug>/<slug>-cosign.pub \\
     --signature security/<slug>/<slug>-cosign.sig \\
     security/<slug>/<slug>.tar
 ```
-{err_text}"""
+{fast_mode_warning}{err_text}"""
 
 
 # ── AC-CONST-2 / AC-CONST-3: in-memory job store + pipeline cache ──
@@ -398,6 +422,7 @@ def _build_zip_bytes(
     configs: dict[str, dict],
     pipeline_results: dict[str, PipelineContext],
     security_errors: list[str],
+    with_owasp: bool = True,  # AC-CONST-4
 ) -> bytes:
     """AC-CONST-2: extracted zip-assembly code from the old sync
     handler. Returns the assembled ZIP bytes. The caller (background
@@ -407,6 +432,12 @@ def _build_zip_bytes(
     is still applied (now by the launcher), Bug #6 secret masking
     in .env.example is preserved, and security artifacts are still
     pulled from pipeline contexts.
+
+    AC-CONST-4: when with_owasp=False (fast path), the zip does NOT
+    include any security-pipeline artifacts (no SBOM, no Trivy, no
+    OWASP DC, no Cosign). It also skips `image_tar` and `deploy.sh`
+    in fast mode — those exist for the signed-package deployment flow
+    which the user opted out of. Build artifacts (Dockerfile) stay.
     """
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -454,24 +485,26 @@ def _build_zip_bytes(
                 env_lines.append(f"{slug.upper()}_{key.upper()}={val}")
         zf.writestr(".env.example", "\n".join(env_lines))
 
-        # Security artifacts from pipeline
-        for slug in resolved:
-            ctx = pipeline_results.get(slug)
-            if not ctx:
-                continue
-            for art_key, art_path in ctx.artifacts.items():
-                if not art_path:
+        # Security artifacts from pipeline (AC-CONST-4: skipped in fast mode)
+        if with_owasp:
+            for slug in resolved:
+                ctx = pipeline_results.get(slug)
+                if not ctx:
                     continue
-                art_file = Path(art_path)
-                if art_file.exists():
-                    arcname = f"security/{slug}/{art_file.name}"
-                    zf.write(str(art_file), arcname)
+                for art_key, art_path in ctx.artifacts.items():
+                    if not art_path:
+                        continue
+                    art_file = Path(art_path)
+                    if art_file.exists():
+                        arcname = f"security/{slug}/{art_file.name}"
+                        zf.write(str(art_file), arcname)
 
         # README.md
         readme = _build_readme(
             resolved, manifests, auto_added, profile,
-            pipeline_results=pipeline_results,
+            pipeline_results=pipeline_results if with_owasp else None,
             security_errors=security_errors,
+            with_owasp=with_owasp,  # AC-CONST-4
         )
         zf.writestr("README.md", readme)
 
@@ -492,6 +525,7 @@ def _run_constructor_job(job_id: str, body_dict: dict) -> None:
     components = body_dict["components"]
     profile = body_dict["profile"]
     fast_mode = body_dict.get("fast_mode", False)
+    with_owasp = body_dict.get("with_owasp", True)  # AC-CONST-4
     configs = body_dict.get("configs", {})
 
     try:
@@ -528,11 +562,23 @@ def _run_constructor_job(job_id: str, body_dict: dict) -> None:
                 )
             manifests[slug] = yaml.safe_load(manifest_path.read_text())
 
-        # 4. AC-CONST-3: pipeline with optional fast_mode cache.
+        # 4. AC-CONST-3 / AC-CONST-4: pipeline selection.
+        #   with_owasp=False → _FAST_PIPELINE (build + package only, no OWASP / Trivy / Cosign).
+        #                       Скачивание идёт за секунды (build + zip), без 3-мин OWASP-скана.
+        #   with_owasp=True  → _SECURITY_PIPELINE (full chain). Тяжёлый, но auditable.
+        #   fast_mode=True   → AC-CONST-3: cache hit-or-run. Используется ТОЛЬКО при with_owasp=True
+        #                       (для быстрых повторных скачиваний уже проверенного стека).
         pipeline_results: dict[str, PipelineContext] = {}
         security_errors: list[str] = []
 
-        if not fast_mode:
+        if not with_owasp:
+            # AC-CONST-4 fast path: build + package only, no security artifacts.
+            for slug in resolved:
+                manifest = manifests[slug]
+                work_dir = Path("/tmp/gosdocker-constructor") / job_id / slug
+                ctx = _FAST_PIPELINE.run(manifest, profile=profile, work_dir=work_dir)
+                pipeline_results[slug] = ctx
+        elif not fast_mode:
             # Always run pipeline synchronously. Why: the pipeline is
             # already a blocking subprocess (docker build, trivy scan,
             # cosign sign). The previous asyncio.gather + run_until_complete
@@ -588,6 +634,7 @@ def _run_constructor_job(job_id: str, body_dict: dict) -> None:
             configs=configs,
             pipeline_results=pipeline_results,
             security_errors=security_errors,
+            with_owasp=with_owasp,  # AC-CONST-4
         )
 
         # 6. Persist zip in /tmp and update job
@@ -678,6 +725,7 @@ async def constructor_generate(body: ConstructorRequest):
         "components": body.components,
         "profile": body.profile,
         "fast_mode": body.fast_mode,
+        "with_owasp": body.with_owasp,  # AC-CONST-4
         "started_at": time.time(),
         "errors": [],
     }
@@ -705,6 +753,7 @@ async def constructor_generate(body: ConstructorRequest):
         "components": body.components,
         "profile": body.profile,
         "fast_mode": body.fast_mode,
+        "with_owasp": body.with_owasp,  # AC-CONST-4
     }
 
 
@@ -721,6 +770,7 @@ async def get_constructor_job(job_id: str):
         "components": job.get("components", []),
         "profile": job.get("profile", "standard"),
         "fast_mode": job.get("fast_mode", False),
+        "with_owasp": job.get("with_owasp", True),  # AC-CONST-4
         "started_at": job.get("started_at"),
         "finished_at": job.get("finished_at"),
     }
