@@ -149,9 +149,19 @@ def _run_pipeline_for_component(
     slug: str,
     manifest: dict,
     profile: str,
+    job_id: str | None = None,
 ) -> PipelineContext:
-    """Run the full security pipeline for a single component (blocking)."""
-    work_dir = Path("/tmp/gosdocker-constructor") / slug
+    """Run the full security pipeline for a single component (blocking).
+
+    work_dir is namespaced by job_id first, then by slug. With the old
+    shape ``/tmp/gosdocker-constructor/{slug}/`` two concurrent jobs
+    that shared a component wrote into the same directory and their
+    `docker run` invocations raced on the same tar / cosign artifacts.
+    The job_id prefix isolates them; the slug is kept in the path so
+    debugging on the host still works.
+    """
+    base = Path("/tmp/gosdocker-constructor")
+    work_dir = base / (job_id or "unknown") / slug
     return _SECURITY_PIPELINE.run(manifest, profile=profile, work_dir=work_dir)
 
 
@@ -540,7 +550,7 @@ def _run_constructor_job(job_id: str, body_dict: dict) -> None:
             # simple, fix the cross-loop bug.
             for slug in resolved:
                 manifest = manifests[slug]
-                ctx = _run_pipeline_for_component(slug, manifest, profile)
+                ctx = _run_pipeline_for_component(slug, manifest, profile, job_id=job_id)
                 pipeline_results[slug] = ctx
         else:
             # fast_mode=True: hit-or-run.
@@ -552,7 +562,13 @@ def _run_constructor_job(job_id: str, body_dict: dict) -> None:
                 if cached is not None:
                     pipeline_results[slug] = cached["ctx"]
                 else:
-                    work_dir = Path("/tmp/gosdocker-constructor") / slug
+                    # Mirror the non-fast path's job_id-namespaced work_dir
+                    # so concurrent jobs with overlapping slugs don't race
+                    # on the same tar / cosign artifacts. The cache key is
+                    # (slug, profile, manifest_hash), so two jobs hitting
+                    # the same cache entry is fine — only the cold path
+                    # needs the per-job scratch dir.
+                    work_dir = Path("/tmp/gosdocker-constructor") / job_id / slug
                     ctx = _SECURITY_PIPELINE.run(manifest, profile=profile, work_dir=work_dir)
                     pipeline_results[slug] = ctx
                     _cache_put(key, ctx)
