@@ -133,6 +133,51 @@ describe('useApi', () => {
     })
   })
 
+  describe('constructorGenerate (AC-CONST-4 fast-path for cards)', () => {
+    // Bug #18 (18 Jun 2026, runtime-confirmed by user report on /catalog):
+    //  - ComponentCard.quickDownload calls constructorGenerate WITHOUT
+    //    `with_owasp: false`. Backend defaults with_owasp=True → runs
+    //    full OWASP / Trivy / Cosign pipeline. Result: clicking
+    //    "Скачать Docker образ" on Angie PRO from /catalog hangs the
+    //    UI for 3+ minutes in "Подготовка..." state.
+    //  - The fix is in ComponentCard.vue, not in useApi.ts. The
+    //    test below documents the contract: constructorGenerate
+    //    accepts a `with_owasp` field in ConstructorRequest. The
+    //    ComponentCard fix is then a one-line `with_owasp: false`
+    //    addition, verified by inspecting the request body that
+    //    gets sent.
+    //
+    // We don't test the full submit-poll-download cycle here —
+    // that's already covered by buildComponent. We test only that
+    // the request body includes with_owasp: false when the caller
+    // sets it.
+
+    it('passes with_owasp=false through to POST /api/constructor body', async () => {
+      mockFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ job_id: 'jid' }) })
+      // Simulate a fast job that finishes immediately.
+      mockFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'ok', zip_path: '/tmp/jid.zip' }) })
+      // The download endpoint.
+      mockFetch.mockResolvedValueOnce({ ok: true, blob: () => Promise.resolve(new Blob()) })
+
+      const { constructorGenerate } = useApi()
+      await constructorGenerate({
+        components: ['angie-pro'],
+        profile: 'standard',
+        fast_mode: true,
+        with_owasp: false,           // <-- the contract being enforced
+        configs: { 'angie-pro': { ports: { 80: 8080 }, volumes: {}, env: {} } },
+      })
+
+      // First call = the POST. Inspect its body.
+      const postCall = mockFetch.mock.calls[0]
+      expect(postCall[0]).toBe('/api/constructor')
+      const opts = postCall[1] as RequestInit
+      const body = JSON.parse(opts.body as string)
+      expect(body.with_owasp).toBe(false)
+      expect(body.components).toEqual(['angie-pro'])
+    })
+  })
+
   describe('fetchReports', () => {
     it('fetches security report for a slug', async () => {
       mockFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ slug: 'nginx' }) })
