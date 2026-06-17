@@ -21,6 +21,11 @@ async function quickDownload() {
       const blob = await constructorGenerate({
         components: [props.component.slug],
         profile: selectedProfile.value,
+        // AC-CONST-4 / Bug #18: card-level "Скачать" on /catalog must
+        // use the fast path. The user is downloading a stack template,
+        // not requesting a security audit. They can always go to the
+        // Constructor view to choose the full security path explicitly.
+        with_owasp: false,
         fast_mode: true,
         configs: {
           [props.component.slug]: {
