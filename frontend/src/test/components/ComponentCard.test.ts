@@ -33,19 +33,23 @@ import ComponentCard from '../../components/ComponentCard.vue'
 import type { Component } from '../../types'
 
 const baseComponent: Component = {
+  id: 'test-id-angie',
   slug: 'angie-pro',
   name: 'Angie PRO',
   description: 'Test',
   version: '1.10.0',
   category: 'web-servers',
-  category_label: 'Web',
-  source: 'registry',
+  image: 'angie:1.10.0',
+  image_source: 'docker.io/angie',
+  registry_url: '',
+  registry_number: null,
   is_registry: true,
   has_registry: true,
+  build_method: 'dockerfile',
   default_ports: { '80': 80 },
   default_volumes: {},
   default_env: {},
-  tags: [],
+  variables_schema: {},
 }
 
 const routes = [

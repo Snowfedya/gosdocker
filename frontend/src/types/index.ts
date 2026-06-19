@@ -95,6 +95,11 @@ export interface ConstructorRequest {
   components: string[]
   profile: string
   configs: Record<string, Record<string, unknown>>
+  // Phase 1 additions: align TS schema with the backend Pydantic model.
+  // Both fields are optional in the backend — the constructor
+  // endpoint accepts them and falls back to defaults.
+  with_owasp?: boolean
+  fast_mode?: boolean
 }
 
 export interface ConstructorDiagnostic {

@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { useApi } from '../composables/useApi'
 import type { Stack } from '../types'
 import AppIcon from '../components/AppIcon.vue'
 import SourceBadge from '../components/SourceBadge.vue'
 
 const route = useRoute()
-const router = useRouter()
 const { fetchStacks, generateStack } = useApi()
 
 const stack = ref<Stack | null>(null)
@@ -52,11 +51,6 @@ async function downloadStack() {
   }
 }
 
-function openConstructor() {
-  if (!stack.value) return
-  const slugs = stack.value.components.map(c => c.slug).join(',')
-  router.push(`/constructor?components=${slugs}`)
-}
 </script>
 
 <template>

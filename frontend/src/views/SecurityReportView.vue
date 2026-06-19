@@ -11,7 +11,7 @@ import AppIcon from '../components/AppIcon.vue'
 const route = useRoute()
 const slug = route.params.slug as string
 
-const { report, loading, error, score, scoreGrade, severitySummary, vulnerabilities, load } = useSecurityReport(slug)
+const { report, loading, error, score, scoreGrade, severitySummary, vulnerabilities, load, scan } = useSecurityReport(slug)
 
 const activeTab = ref<'vulns' | 'deps'>('vulns')
 const scanning = ref(false)
