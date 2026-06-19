@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from uuid import UUID
 
 class ComponentBase(BaseModel):
@@ -22,5 +22,4 @@ class ComponentDetail(ComponentBase):
     has_registry: bool = False
     build_method: str | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

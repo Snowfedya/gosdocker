@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class StackComponentResponse(BaseModel):
@@ -19,5 +19,4 @@ class StackResponse(BaseModel):
     is_featured: bool
     components: list[StackComponentResponse]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

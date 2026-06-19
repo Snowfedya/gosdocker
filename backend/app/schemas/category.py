@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from uuid import UUID
 
 class CategoryBase(BaseModel):
@@ -14,5 +14,4 @@ class CategoryResponse(CategoryBase):
     registry_count: int = 0
     community_count: int = 0
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

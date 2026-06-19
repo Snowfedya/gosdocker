@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 class ComponentConfig(BaseModel):
     ports: dict[str, int] = {}
@@ -11,8 +11,8 @@ class GenerateRequest(BaseModel):
     include_sources: bool = True
     security_profile: str = "basic"
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "components": ["nginx", "postgresql"],
                 "config": {
@@ -22,6 +22,7 @@ class GenerateRequest(BaseModel):
                 "security_profile": "standard",
             }
         }
+    )
 
 class GenerateResponse(BaseModel):
     filename: str

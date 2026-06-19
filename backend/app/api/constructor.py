@@ -32,7 +32,7 @@ from pathlib import Path
 import yaml
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from app.pipeline import (
     Pipeline, BuildStep, ScanStep, PackageStep, RegisterStep,
@@ -87,8 +87,8 @@ class ConstructorRequest(BaseModel):
     fast_mode: bool = False  # AC-CONST-3: cache hit-or-run for warm entries
     with_owasp: bool = True  # AC-CONST-4: full security pipeline (default)
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "components": ["nginx", "nextcloud"],
                 "profile": "standard",
@@ -96,6 +96,7 @@ class ConstructorRequest(BaseModel):
                 "with_owasp": True,
             }
         }
+    )
 
 
 class ConstructorDiagnostic(BaseModel):

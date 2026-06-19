@@ -198,6 +198,19 @@ class TestBuildEndpoint:
 # --------------- full workflow ---------------
 
 class TestWorkflow:
+    """
+    End-to-end workflow tests that run the real security pipeline
+    (build → Trivy scan → OWASP DC → Cosign sign → package).
+
+    Marked `integration` because they require:
+    - docker pull access to the registry
+    - Trivy / OWASP DC / Cosign CLIs in PATH
+    - Real images to scan (slow, can take minutes per test)
+
+    Run with: `pytest -m integration -k TestWorkflow`
+    """
+    pytestmark = pytest.mark.integration
+
     def test_build_then_reports(self):
         """Build → GET reports returns the cached report. AC-4: polls job."""
         with client() as c:
