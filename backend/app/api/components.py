@@ -6,13 +6,22 @@ from pathlib import Path
 from ..database import get_db
 from ..models import Component, Category
 from ..schemas.component import ComponentDetail
+from app.services.slug import is_valid_slug
 
 REGISTRY_DIR = Path(__file__).parent.parent.parent / "registry"
 
 
 def _load_manifest_meta(slug: str) -> dict:
-    """Load registry build info for a slug, or return empty."""
+    """Load registry build info for a slug, or return empty.
+
+    Defensive: even though slug comes from the DB (not user input), we
+    validate it before constructing a filesystem path. If a malformed
+    slug ever leaks into the DB, we'd rather return empty meta than
+    raise.
+    """
     import yaml
+    if not is_valid_slug(slug):
+        return {"has_registry": False, "build_method": None}
     manifest_path = REGISTRY_DIR / slug / "manifest.yml"
     if not manifest_path.exists():
         return {"has_registry": False, "build_method": None}

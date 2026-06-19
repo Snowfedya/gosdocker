@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from app.services.slug import validate_slug as _validate_slug
 
 from app.pipeline import (
     Pipeline, BuildStep, ScanStep, PackageStep, RegisterStep,
@@ -32,17 +33,6 @@ _PIPELINE = Pipeline([
     RegisterStep(),
     DependencyCheckStep(),  # runs last — can timeout without blocking the critical path
 ])
-
-_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,60}[a-z0-9]$")
-
-def _validate_slug(slug: str) -> str:
-    """Validate component slug against safe pattern to prevent path traversal."""
-    if not _SLUG_RE.match(slug):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid slug '{slug}'. Must match [a-z0-9][a-z0-9-]{{0,60}}[a-z0-9]",
-        )
-    return slug
 
 
 def _list_registry_components() -> list[str]:

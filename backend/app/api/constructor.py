@@ -21,8 +21,9 @@ miss the pipeline runs anyway — we never fail loudly on a miss.
 import hashlib
 import io
 import json
-import re
 import threading
+
+from app.services.slug import validate_slug as _validate_slug
 import time
 import uuid
 import zipfile
@@ -49,18 +50,6 @@ router = APIRouter(prefix="/api/constructor", tags=["constructor"])
 REGISTRY_BASE = Path(__file__).parent.parent.parent / "registry"
 
 resolver = DependencyResolver()
-
-_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,60}[a-z0-9]$")
-
-def _validate_slug(slug: str, context: str = "") -> str:
-    """Validate component slug against safe pattern to prevent path traversal."""
-    if not _SLUG_RE.match(slug):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid slug '{slug}'{context}. "
-                   f"Must match [a-z0-9][a-z0-9-]{{0,60}}[a-z0-9]",
-        )
-    return slug
 
 
 # Pipeline instance used for each component build
