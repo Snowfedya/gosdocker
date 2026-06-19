@@ -1,21 +1,27 @@
 # GosDocker — AGENTS.md (проектный контекст)
 
 > **Платформа контейнеризации для государственных учреждений.**
-> ВКР Петленко Ф.Д., УВПв-521. Защита: 15-18 июня 2026.
+> ВКР Петленко Ф.Д., УВПв-521. Защита ВКР: 15-18 июня 2026 ✅ (состоялась).
 > GitHub: `github.com/Snowfedya/gosdocker.git`
 > Прочитай этот файл ПЕРВЫМ при любой работе с GosDocker.
 
 ---
 
-## Текущий статус (02.06.2026)
+## Текущий статус (19.06.2026 — после защиты)
 
-🔴 **Нормоконтроль 05.06** — через 3 дня. Защита 15-18.06.
-🟢 Backend: FastAPI работающий, pipeline (build → OWASP → sign → register) написан
-🟢 Frontend: Vue 3, каталог компонентов, конструктор сборок
+✅ **Защита ВКР состоялась** (15-18.06.2026)
+🟢 Backend: FastAPI 0.109, async pipeline (build → Trivy → OWASP DC → Cosign → package)
+🟢 Frontend: Vue 3 + TS + Tailwind, 44 unit-теста зелёные
+🟢 Backend tests: 100 unit-тестов ✅ + 2 integration-теста (требуют живой postgres, маркированы)
 🟢 Docker Compose: локально собирается
-🔴 **Требования Заманова** (преподаватель, готовит рецензию): source-build + SBOM(CDX) + signed images(Cosign) + OWASP + tar/deploy.sh + скриншоты в ВКР
-🟡 Тесты: P0 тест-план готов (02.06), но не все написаны
-🟡 Аутентификация: отсутствует (TODO)
+✅ **Требования Заманова реализованы**: source-build + SBOM(CDX) + Cosign + OWASP DC + tar/deploy.sh
+✅ AC-CONST-1..4 (constructor async, slug preflight, fast path, scan polling)
+✅ Bug #1..#18 fixed (port conflict, bundle sync, OWASP placeholder, HTTPS redirect, container name hardcode, concurrent work_dirs, fast path 3s vs 3min)
+🟡 Аутентификация: отсутствует (out of scope для ВКР)
+
+### Branch policy
+- `master` — основная ветка, синхронизирована с `origin/master`
+- `security-fixes` — **архивная параллельная ветка** (merge-base = `fd7b534`, 4 коммита, не мерджить, master уже впитал всё полезное)
 
 ---
 

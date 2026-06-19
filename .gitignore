@@ -27,3 +27,20 @@ Thumbs.db
 # Node
 node_modules/
 dist/
+
+# Hermes planning artifacts (local only)
+.supergoal/
+
+# Local MCP / dev configs
+config/
+
+# SSL certificates and secrets (NEVER commit, even self-signed)
+nginx/ssl/
+*.pem
+*.key
+*.crt
+
+# Backups
+*.bak
+docker-compose.yml.bak
+
