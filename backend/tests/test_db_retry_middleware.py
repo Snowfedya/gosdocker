@@ -4,11 +4,17 @@ Deterministic TDD test: middleware retry works даже когда pre_ping=Fals
 Чтобы устранить race с pool_pre_ping, мы создаём изолированный app
 с engine pre_ping=False, и держим killed connection в pool через
 session.invalidate(). В этом сценарии middleware — единственная защита.
+
+Marked as `integration` because it requires a live PostgreSQL reachable
+at DATABASE_URL (defaults to `db:5432`, the docker-compose service name).
+Run with: `pytest -m integration` from inside the backend container or
+with a tunnel to the live DB.
 """
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_middleware_saves_get_when_pre_ping_disabled(monkeypatch):
     """
@@ -90,6 +96,7 @@ async def test_middleware_saves_get_when_pre_ping_disabled(monkeypatch):
     await iso_engine.dispose()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_no_middleware_same_scenario_fails():
     """

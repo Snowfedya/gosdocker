@@ -3,6 +3,11 @@ TDD test для Lesson #32 followup: pool_pre_ping=True + TCPTransport closed.
 
 Production сценарий: несколько FastAPI workers держут connections в pool.
 db перезагружается (Recreate). Первый запрос после restart ловит 500.
+
+Marked as `integration` because it requires a live PostgreSQL reachable
+at DATABASE_URL (defaults to `db:5432`, the docker-compose service name).
+Run with: `pytest -m integration` from inside the backend container or
+with a tunnel to the live DB.
 """
 import asyncio
 import os
@@ -12,6 +17,8 @@ import asyncpg
 import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+pytestmark = pytest.mark.integration
 
 
 @pytest.mark.asyncio
